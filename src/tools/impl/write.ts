@@ -101,6 +101,10 @@ class WriteTool extends Tool {
         resolvedPath = path.resolve(normalizedPath);
       }
 
+      // 权限模式检查
+      const perm = checkPathPermission(resolvedPath, true, projectDir);
+      if (!perm.allow) return ToolResult.error(perm.reason!);
+
       // 受保护路径检查（禁止改快照/记忆数据）
       const guard = isProtectedPath(resolvedPath);
       if (guard) return ToolResult.error('写入失败: 目标路径受保护 — ' + guard);

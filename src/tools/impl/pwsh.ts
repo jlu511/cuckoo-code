@@ -105,6 +105,10 @@ class PwshTool extends Tool {
         return ToolResult.error('invalid command: expected a non-empty string');
       }
 
+      // 权限模式检查：只读模式下直接禁用 pwsh
+      const perm = checkCommandPermission(trimmed);
+      if (!perm.allow) return ToolResult.error(perm.reason!);
+
       // 危险命令检查（统一检测：按 shell 控制符分段逐段匹配）
       if (isDangerous(trimmed)) {
         return ToolResult.error('命令被安全策略拒绝（危险命令）: ' + trimmed);

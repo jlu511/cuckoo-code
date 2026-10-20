@@ -72,6 +72,10 @@ class DeleteFileTool extends Tool {
       absolutePath = path.resolve(filePath);
     }
 
+    // 权限模式检查
+    const perm = checkPathPermission(absolutePath, true, projectDir);
+    if (!perm.allow) return ToolResult.error(perm.reason!);
+
     // 受保护路径检查（禁止删除快照/记忆数据）
     const guard = isProtectedPath(absolutePath);
     if (guard) return ToolResult.error('删除失败: 目标路径受保护 — ' + guard);
