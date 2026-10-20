@@ -151,7 +151,6 @@
   .ck-mcp-item + .ck-mcp-item { border-top: 1px solid var(--ck-border); }
   .ck-mcp-item:hover { background: var(--ck-surface); border-radius: 12px; border-top-color: transparent; }
   .ck-mcp-item:hover + .ck-mcp-item { border-top-color: transparent; }
-  .ck-mcp-editor { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--ck-border); }
   .ck-mcp-top { display: flex; align-items: center; gap: 8px; }
   .ck-mcp-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--ck-text-dim); }
   .ck-mcp-dot.on { background: var(--ck-green); box-shadow: 0 0 0 3px rgba(48,164,108,.15); }
@@ -253,8 +252,8 @@
   }
   /* 编辑弹层 */
   .ck-modal-mask {
-    position: absolute; inset: 0; z-index: 20;
-    background: rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center;
+    position: fixed; inset: 0; z-index: 9999;
+    background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center;
     padding: 16px;
   }
   .ck-modal-mask.cuckoo-hidden { display: none; }

@@ -4,6 +4,7 @@
  */
 import { api, escapeHtml, ckAlert, ckConfirm } from '../shared.js';
 import { addRecent } from '../recent.js';
+import { expandForModal, restoreAfterModal } from '../sidebar.js';
 
 /** 把用户级 server 列表转成主流 mcpServers 格式的 JSON 文本 */
 function serversToJson(servers: any[]): string {
@@ -37,66 +38,66 @@ async function loadMcpJson(): Promise<void> {
 }
 
 /** 保存 JSON 编辑框里的用户级配置 */
-async function saveMcpJson(): Promise<void> {
+async function saveMcpJson(): Promise<boolean> {
   const el = document.getElementById('mcp-json') as any;
   if (!el || !String(el.value).trim()) {
     await ckAlert('请输入配置');
-    return;
+    return false;
   }
   let parsed: any;
   try {
     parsed = JSON.parse(el.value);
   } catch (err: any) {
     await ckAlert('JSON 解析失败: ' + (err.message || err));
-    return;
+    return false;
   }
   if (!parsed.mcpServers || typeof parsed.mcpServers !== 'object' || Array.isArray(parsed.mcpServers)) {
     await ckAlert('配置格式错误，需要 mcpServers 对象');
-    return;
+    return false;
   }
   // 逐项校验，发现错误立即中止（不删旧配置）
   for (const [name, def] of Object.entries(parsed.mcpServers) as [string, any][]) {
     if (!def || typeof def !== 'object' || Array.isArray(def)) {
       await ckAlert('配置错误：server "' + name + '" 的定义必须是对象');
-      return;
+      return false;
     }
     const hasUrl = def.url !== undefined;
     const hasCommand = def.command !== undefined;
     if (hasUrl) {
       if (typeof def.url !== 'string' || !def.url.trim()) {
         await ckAlert('配置错误：server "' + name + '" 的 url 必须是非空字符串');
-        return;
+        return false;
       }
       if (hasCommand) {
         await ckAlert('配置错误：server "' + name + '" 不能同时指定 url 和 command');
-        return;
+        return false;
       }
     } else if (hasCommand) {
       if (typeof def.command !== 'string' || !def.command.trim()) {
         await ckAlert('配置错误：server "' + name + '" 的 command 必须是非空字符串');
-        return;
+        return false;
       }
     } else {
       await ckAlert('配置错误：server "' + name + '" 缺少 command 或 url');
-      return;
+      return false;
     }
     if (def.args !== undefined && !Array.isArray(def.args)) {
       await ckAlert('配置错误：server "' + name + '" 的 args 必须是数组');
-      return;
+      return false;
     }
     if (def.env !== undefined && (typeof def.env !== 'object' || def.env === null || Array.isArray(def.env))) {
       await ckAlert('配置错误：server "' + name + '" 的 env 必须是对象');
-      return;
+      return false;
     }
     if (def.headers !== undefined && (typeof def.headers !== 'object' || def.headers === null || Array.isArray(def.headers))) {
       await ckAlert('配置错误：server "' + name + '" 的 headers 必须是对象');
-      return;
+      return false;
     }
   }
 
   if (!api.upsertMcpServer || !api.removeMcpServer) {
     await ckAlert('当前版本不支持保存 MCP 配置');
-    return;
+    return false;
   }
 
   try {
@@ -125,8 +126,10 @@ async function saveMcpJson(): Promise<void> {
     await ckAlert('配置已保存');
     await loadMcpServers();
     await loadMcpJson();
+    return true;
   } catch (err: any) {
     await ckAlert('保存失败: ' + (err.message || err));
+    return false;
   }
 }
 
@@ -174,25 +177,29 @@ export async function loadMcpServers(): Promise<void> {
 
 document.getElementById('mcp-refresh')?.addEventListener('click', loadMcpServers);
 
-// 编辑区开关
+// 弹窗逻辑
+const mcpModal = document.getElementById('mcp-modal');
+
+function closeMcpModal() {
+  if (!mcpModal) return;
+  mcpModal.classList.add('cuckoo-hidden');
+  restoreAfterModal();
+}
+
 document.getElementById('mcp-edit-toggle')?.addEventListener('click', async () => {
-  const editor = document.getElementById('mcp-editor');
-  if (!editor) return;
-  const hidden = editor.classList.contains('cuckoo-hidden');
-  if (hidden) {
-    editor.classList.remove('cuckoo-hidden');
-    await loadMcpJson();
-  } else {
-    editor.classList.add('cuckoo-hidden');
-  }
+  if (!mcpModal) return;
+  expandForModal();
+  await loadMcpJson();
+  mcpModal.classList.remove('cuckoo-hidden');
 });
 
-document.getElementById('mcp-editor-close')?.addEventListener('click', () => {
-  document.getElementById('mcp-editor')?.classList.add('cuckoo-hidden');
-});
+document.getElementById('mcp-modal-cancel')?.addEventListener('click', closeMcpModal);
 
-document.getElementById('mcp-save')?.addEventListener('click', async () => {
+document.getElementById('mcp-modal-save')?.addEventListener('click', async () => {
   const ok = await ckConfirm('保存将覆盖用户级 MCP 配置，确定继续？', '确认保存');
   if (!ok) return;
-  await saveMcpJson();
+  const success = await saveMcpJson();
+  if (success) {
+    closeMcpModal();
+  }
 });
