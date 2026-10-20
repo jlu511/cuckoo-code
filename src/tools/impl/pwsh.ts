@@ -8,6 +8,8 @@ import { isDangerous, DANGEROUS_CMDS } from '../../infra/dangerous-commands.js';
 import { checkCommandPermission } from '../../infra/permission.js';
 import { createRequire } from 'node:module';
 
+const require = createRequire(import.meta.url);
+
 // ========== D12：API 契约元数据（构建期生成 api.d.ts）==========
 export const apiMetas: ToolApiMeta[] = [
   {
@@ -110,41 +112,67 @@ class PwshTool extends Tool {
       const perm = checkCommandPermission(trimmed);
       if (!perm.allow) return ToolResult.error(perm.reason!);
 
-      // 危险命令检查（统一检测：按 shell 控制符分段逐段匹配）
-      if (isDangerous(trimmed)) {
-        return ToolResult.error('命令被安全策略拒绝（危险命令）: ' + trimmed);
-      }
+      // 危险命令检查（原一票否决，现合并到高危红框判定中）
+      const isBaseDangerous = isDangerous(trimmed);
 
       if (!description || typeof description !== 'string' || description.trim() === '') {
         return ToolResult.error('安全拒绝：执行命令前必须提供清晰的 description 说明其用途。');
       }
 
-      const highRiskPatterns = [/Remove-Item.*-Recurse/i, /rm\s+-[rRfF]/i, /del\s+\/s/i, /rd\s+\/s/i, /format/i, /Out-File.*[A-Z]:\\/i];
-      const isHighRisk = highRiskPatterns.some(p => p.test(trimmed)) || highRiskPatterns.some(p => p.test(description));
+      // ====== 1. 危险等级判定 ======
+      // 破坏性命令：只要包含这些词，无论有没有盘符，都是高危
+      const destructivePatterns = [/\b(rm|del|rd|rmdir|format|mkfs|dd|Remove-Item)\b/i];
+      // 重定向到盘符根目录
+      const rootRedirectPattern = />\s*[A-Z]:\\?(\s|"|'|$|\*)/i;
       
-      let warnText = '未检测到明显的高危操作，但仍请仔细核对。';
+      const isDestructive = destructivePatterns.some(p => p.test(trimmed));
+      const isRootRedirect = rootRedirectPattern.test(trimmed);
+      const isHighRisk = isBaseDangerous || isDestructive || isRootRedirect;
+
+      // 只读白名单：日常查看、切换目录等，绝不弹窗
+      const readonlyPrefixes = [
+        /^cd\b/i, /^pwd\b/i, /^dir\b/i, /^ls\b/i, /^type\b/i, /^cat\b/i, /^Get-Content\b/i,
+        /^echo\b/i, /^where\b/i, /^which\b/i, /^git status\b/i, /^git log\b/i,
+        /^git diff\b/i, /^git branch\b/i, /^node -v\b/i, /^npm -v\b/i
+      ];
+      const isReadonly = readonlyPrefixes.some(p => p.test(trimmed));
+
+      let needConfirm = true;
+      let warnText = 'AI 请求执行普通 PowerShell 命令，是否允许？';
+
       if (isHighRisk) {
-        warnText = '🚨 极度危险！检测到递归删除、格式化或直接操作盘符根目录的操作。一旦执行，可能导致数据永久丢失。请务必确认上面的路径没有写错！';
+        needConfirm = true;
+        warnText = '🚨 极度危险！检测到可能破坏数据的操作（如删除、格式化或直接写入盘符根目录）。一旦执行，可能导致数据永久丢失！';
+      } else if (isReadonly) {
+        needConfirm = false; // 只读命令直接放行
       }
 
-      try {
-        const { dialog, BrowserWindow } = require('electron');
-        const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
-        const { response } = await dialog.showMessageBox(win, {
-          type: isHighRisk ? 'error' : 'warning',
-          title: isHighRisk ? '🚨 高危操作拦截' : '执行 PowerShell 命令确认',
-          message: 'AI 请求执行以下命令，是否允许？',
-          detail: '【AI 的用途说明】\n' + description + '\n\n【完整命令内容】\n' + trimmed + '\n\n【安全分析】\n' + warnText,
-          buttons: ['允许执行', '拒绝 (默认)'],
-          defaultId: 1,
-          cancelId: 1
-        });
-        if (response === 1) {
-          return ToolResult.error('用户拒绝了此命令的执行。');
+      if (needConfirm) {
+        try {
+          const { dialog, BrowserWindow } = require('electron');
+          const wins = BrowserWindow.getAllWindows();
+          const mainWin = wins.length > 0 ? wins[0] : null;
+          if (mainWin) { mainWin.setAlwaysOnTop(true); mainWin.focus(); }
+          const { response } = await dialog.showMessageBox(mainWin || undefined, {
+            type: isHighRisk ? 'error' : 'warning',
+            title: isHighRisk ? '🚨 高危操作拦截' : '执行 PowerShell 命令确认',
+            message: 'AI 请求执行以下命令，是否允许？',
+            detail: '【AI 的用途说明】\n' + description + '\n\n【完整命令内容】\n' + trimmed + '\n\n【安全分析】\n' + warnText,
+            buttons: ['允许执行', '拒绝 (默认)'],
+            defaultId: 1,
+            cancelId: 1
+          });
+          if (mainWin) { mainWin.setAlwaysOnTop(false); }
+          if (response === 1) {
+            return ToolResult.error('用户拒绝了此命令的执行。');
+          }
+        } catch (e: any) {
+          console.error('弹窗组件加载失败:', e);
+          if (isHighRisk) {
+            return ToolResult.error('命令被安全策略拒绝（危险命令）: ' + trimmed);
+          }
+          return ToolResult.error('安全机制异常，已默认拒绝执行。' + (e.message || e));
         }
-      } catch (e) {
-        console.error('弹窗组件加载失败:', e);
-        return ToolResult.error('安全机制异常，已默认拒绝执行。');
       }
 
 

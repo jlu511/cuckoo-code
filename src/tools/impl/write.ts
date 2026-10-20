@@ -6,6 +6,9 @@ import { isProtectedPath } from '../../infra/protected-paths.js';
 import { checkPathPermission } from '../../infra/permission.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
 
 // ========== D12：API 契约元数据（构建期生成 api.d.ts）==========
 export const apiMetas: ToolApiMeta[] = [
@@ -103,7 +106,34 @@ class WriteTool extends Tool {
 
       // 权限模式检查
       const perm = checkPathPermission(resolvedPath, true, projectDir);
-      if (!perm.allow) return ToolResult.error(perm.reason!);
+      if (!perm.allow) {
+        // 只读模式直接拒绝
+        if (perm.reason && perm.reason.includes('只读模式')) {
+          return ToolResult.error(perm.reason);
+        }
+        // 工作区外写入：弹窗询问
+        try {
+          const { dialog, BrowserWindow } = require('electron');
+          const wins = BrowserWindow.getAllWindows();
+          const mainWin = wins.length > 0 ? wins[0] : null;
+          if (mainWin) { mainWin.setAlwaysOnTop(true); mainWin.focus(); }
+          const { response } = await dialog.showMessageBox(mainWin || undefined, {
+            type: 'warning',
+            title: '越界写入确认',
+            message: 'AI 尝试修改工作区外的文件，是否允许？',
+            detail: '【目标路径】\n' + resolvedPath + '\n\n【权限拦截原因】\n' + perm.reason,
+            buttons: ['允许修改', '拒绝 (默认)'],
+            defaultId: 1,
+            cancelId: 1
+          });
+          if (mainWin) { mainWin.setAlwaysOnTop(false); }
+          if (response === 1) {
+            return ToolResult.error('用户拒绝了越界写入。');
+          }
+        } catch (e: any) {
+          return ToolResult.error('安全机制异常，已默认拒绝执行。' + (e.message || e));
+        }
+      }
 
       // 受保护路径检查（禁止改快照/记忆数据）
       const guard = isProtectedPath(resolvedPath);
