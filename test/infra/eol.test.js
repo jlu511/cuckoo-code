@@ -3,13 +3,16 @@ import { test } from 'vitest';
 import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { normalizeLineEndings, detectLineEndings, restoreLineEndings } from '../../src/infra/eol.js';
 import { EditTool } from '../../src/tools/impl/edit.js';
 import { WriteTool } from '../../src/tools/impl/write.js';
 
 const CR = String.fromCharCode(13);
 const LF = String.fromCharCode(10);
+
+// 测试工作区：权限模块要求写操作必须落在工作区内
+const WORKSPACE = path.join('D:', 'Software', 'cuckoo-code', 'ppt');
+fs.mkdirSync(WORKSPACE, { recursive: true });
 
 // ===== eol.ts 纯函数 =====
 
@@ -60,7 +63,7 @@ test('restoreLineEndings: 已 CRLF 不翻倍成 \r\r\n', () => {
 // ===== edit 工具 =====
 
 function tmpFile(content) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cuckoo-eol-'));
+  const dir = fs.mkdtempSync(path.join(WORKSPACE, 'cuckoo-eol-'));
   const f = path.join(dir, 'x.md');
   fs.writeFileSync(f, content, 'utf8');
   return f;
@@ -76,7 +79,7 @@ function countEol(s) {
 test('edit: 纯 CRLF 文件，LF oldString 跨行 → 成功且保持 CRLF', async () => {
   const f = tmpFile(['# t', '- a', '- b'].join(CR + LF) + CR + LF);
   const tool = new EditTool();
-  const r = await tool.execute({ filePath: f, oldString: '- a' + LF + '- b', newString: '- a2' + LF + '- b2' });
+  const r = await tool.execute({ filePath: f, projectDir: WORKSPACE, oldString: '- a' + LF + '- b', newString: '- a2' + LF + '- b2' });
   assert.strictEqual(r.success, true, r.error);
   const after = fs.readFileSync(f, 'utf8');
   assert.strictEqual(countEol(after).lf, 0);
@@ -86,7 +89,7 @@ test('edit: 纯 CRLF 文件，LF oldString 跨行 → 成功且保持 CRLF', asy
 test('edit: 纯 LF 文件 → 保持 LF', async () => {
   const f = tmpFile(['# t', '- a', '- b'].join(LF) + LF);
   const tool = new EditTool();
-  const r = await tool.execute({ filePath: f, oldString: '- a' + LF + '- b', newString: '- a2' + LF + '- b2' });
+  const r = await tool.execute({ filePath: f, projectDir: WORKSPACE, oldString: '- a' + LF + '- b', newString: '- a2' + LF + '- b2' });
   assert.strictEqual(r.success, true, r.error);
   const after = fs.readFileSync(f, 'utf8');
   assert.strictEqual(countEol(after).crlf, 0);
@@ -97,7 +100,7 @@ test('edit: 混合文件只改命中区间，未编辑区域行尾保留（需�
   const content = ['# t', '- a1', '- a2', '- b1', '- b2'].join(LF) + LF + '- c1' + LF + '- d1' + CR + LF + '- d2' + CR + LF;
   const f = tmpFile(content);
   const tool = new EditTool();
-  const r = await tool.execute({ filePath: f, oldString: '- b1' + LF + '- b2', newString: '- b1x' + LF + '- b2x' });
+  const r = await tool.execute({ filePath: f, projectDir: WORKSPACE, oldString: '- b1' + LF + '- b2', newString: '- b1x' + LF + '- b2x' });
   assert.strictEqual(r.success, true, r.error);
   const after = fs.readFileSync(f, 'utf8');
   // 未编辑的两处 CRLF 原样保留，不再被规整成纯 LF
@@ -109,7 +112,7 @@ test('edit: 混合文件只改命中区间，未编辑区域行尾保留（需�
 test('edit: 单行编辑纯 CRLF 保持 CRLF', async () => {
   const f = tmpFile(['# t', '- a', '- b'].join(CR + LF) + CR + LF);
   const tool = new EditTool();
-  const r = await tool.execute({ filePath: f, oldString: '- a', newString: '- ax' });
+  const r = await tool.execute({ filePath: f, projectDir: WORKSPACE, oldString: '- a', newString: '- ax' });
   assert.strictEqual(r.success, true, r.error);
   assert.strictEqual(countEol(fs.readFileSync(f, 'utf8')).lf, 0);
 });
@@ -117,10 +120,10 @@ test('edit: 单行编辑纯 CRLF 保持 CRLF', async () => {
 // ===== write 工具 =====
 
 test('write: 新文件用 LF', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cuckoo-eol-w-'));
+  const dir = fs.mkdtempSync(path.join(WORKSPACE, 'cuckoo-eol-w-'));
   const f = path.join(dir, 'new.md');
   const tool = new WriteTool();
-  const r = await tool.execute({ filePath: f, content: 'a' + CR + LF + 'b' });
+  const r = await tool.execute({ filePath: f, projectDir: WORKSPACE, content: 'a' + CR + LF + 'b' });
   assert.strictEqual(r.success, true, r.error);
   assert.strictEqual(countEol(fs.readFileSync(f, 'utf8')).crlf, 0);
 });
@@ -128,7 +131,7 @@ test('write: 新文件用 LF', async () => {
 test('write: 已有 CRLF 文件，内容跟随 CRLF', async () => {
   const f = tmpFile(['# t', '- a'].join(CR + LF) + CR + LF);
   const tool = new WriteTool();
-  const r = await tool.execute({ filePath: f, content: 'x' + LF + 'y' });
+  const r = await tool.execute({ filePath: f, projectDir: WORKSPACE, content: 'x' + LF + 'y' });
   assert.strictEqual(r.success, true, r.error);
   const after = fs.readFileSync(f, 'utf8');
   assert.strictEqual(countEol(after).lf, 0);
@@ -138,7 +141,7 @@ test('write: 已有 CRLF 文件，内容跟随 CRLF', async () => {
 test('write: 已有 LF 文件，内容跟随 LF', async () => {
   const f = tmpFile(['# t', '- a'].join(LF) + LF);
   const tool = new WriteTool();
-  const r = await tool.execute({ filePath: f, content: 'x' + CR + LF + 'y' });
+  const r = await tool.execute({ filePath: f, projectDir: WORKSPACE, content: 'x' + CR + LF + 'y' });
   assert.strictEqual(r.success, true, r.error);
   assert.strictEqual(countEol(fs.readFileSync(f, 'utf8')).crlf, 0);
 });
