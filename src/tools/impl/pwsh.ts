@@ -6,6 +6,7 @@ import path from 'node:path';
 import { decodeOutput } from '../../infra/decode-output.js';
 import { isDangerous, DANGEROUS_CMDS } from '../../infra/dangerous-commands.js';
 import { checkCommandPermission } from '../../infra/permission.js';
+import { createRequire } from 'node:module';
 
 // ========== D12：API 契约元数据（构建期生成 api.d.ts）==========
 export const apiMetas: ToolApiMeta[] = [
@@ -77,7 +78,7 @@ class PwshTool extends Tool {
             default: 30000
           }
         },
-        required: ['command'],
+        required: ['command', 'description'],
         additionalProperties: false
       },
       'pwsh(command, options?)'
@@ -113,6 +114,39 @@ class PwshTool extends Tool {
       if (isDangerous(trimmed)) {
         return ToolResult.error('命令被安全策略拒绝（危险命令）: ' + trimmed);
       }
+
+      if (!description || typeof description !== 'string' || description.trim() === '') {
+        return ToolResult.error('安全拒绝：执行命令前必须提供清晰的 description 说明其用途。');
+      }
+
+      const highRiskPatterns = [/Remove-Item.*-Recurse/i, /rm\s+-[rRfF]/i, /del\s+\/s/i, /rd\s+\/s/i, /format/i, /Out-File.*[A-Z]:\\/i];
+      const isHighRisk = highRiskPatterns.some(p => p.test(trimmed)) || highRiskPatterns.some(p => p.test(description));
+      
+      let warnText = '未检测到明显的高危操作，但仍请仔细核对。';
+      if (isHighRisk) {
+        warnText = '🚨 极度危险！检测到递归删除、格式化或直接操作盘符根目录的操作。一旦执行，可能导致数据永久丢失。请务必确认上面的路径没有写错！';
+      }
+
+      try {
+        const { dialog, BrowserWindow } = require('electron');
+        const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+        const { response } = await dialog.showMessageBox(win, {
+          type: isHighRisk ? 'error' : 'warning',
+          title: isHighRisk ? '🚨 高危操作拦截' : '执行 PowerShell 命令确认',
+          message: 'AI 请求执行以下命令，是否允许？',
+          detail: '【AI 的用途说明】\n' + description + '\n\n【完整命令内容】\n' + trimmed + '\n\n【安全分析】\n' + warnText,
+          buttons: ['允许执行', '拒绝 (默认)'],
+          defaultId: 1,
+          cancelId: 1
+        });
+        if (response === 1) {
+          return ToolResult.error('用户拒绝了此命令的执行。');
+        }
+      } catch (e) {
+        console.error('弹窗组件加载失败:', e);
+        return ToolResult.error('安全机制异常，已默认拒绝执行。');
+      }
+
 
       // 确定工作目录
       let workDir: string;
