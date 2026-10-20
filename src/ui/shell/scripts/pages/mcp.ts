@@ -1,8 +1,134 @@
 /**
  * MCP（连接器）页：列出 server，点击追加"请使用 xxx 这个 MCP"。
+ * 支持编辑用户级配置（JSON）。
  */
-import { api, escapeHtml } from '../shared.js';
+import { api, escapeHtml, ckAlert, ckConfirm } from '../shared.js';
 import { addRecent } from '../recent.js';
+
+/** 把用户级 server 列表转成主流 mcpServers 格式的 JSON 文本 */
+function serversToJson(servers: any[]): string {
+  const mcpServers: Record<string, any> = {};
+  for (const s of servers) {
+    const def: any = {};
+    if (s.type === 'http') {
+      if (s.url) def.url = s.url;
+      if (s.headers) def.headers = s.headers;
+    } else {
+      if (s.command) def.command = s.command;
+      if (s.args && s.args.length) def.args = s.args;
+      if (s.env) def.env = s.env;
+    }
+    mcpServers[s.name] = def;
+  }
+  return JSON.stringify({ mcpServers }, null, 2);
+}
+
+/** 加载用户级配置到 JSON 编辑框 */
+async function loadMcpJson(): Promise<void> {
+  const el = document.getElementById('mcp-json') as any;
+  if (!el || !api.listUserMcpServers) return;
+  try {
+    const r = await api.listUserMcpServers();
+    const servers = (r && r.success) ? r.servers : [];
+    el.value = serversToJson(servers || []);
+  } catch (_) {
+    el.value = '{\n  "mcpServers": {}\n}';
+  }
+}
+
+/** 保存 JSON 编辑框里的用户级配置 */
+async function saveMcpJson(): Promise<void> {
+  const el = document.getElementById('mcp-json') as any;
+  if (!el || !String(el.value).trim()) {
+    await ckAlert('请输入配置');
+    return;
+  }
+  let parsed: any;
+  try {
+    parsed = JSON.parse(el.value);
+  } catch (err: any) {
+    await ckAlert('JSON 解析失败: ' + (err.message || err));
+    return;
+  }
+  if (!parsed.mcpServers || typeof parsed.mcpServers !== 'object' || Array.isArray(parsed.mcpServers)) {
+    await ckAlert('配置格式错误，需要 mcpServers 对象');
+    return;
+  }
+  // 逐项校验，发现错误立即中止（不删旧配置）
+  for (const [name, def] of Object.entries(parsed.mcpServers) as [string, any][]) {
+    if (!def || typeof def !== 'object' || Array.isArray(def)) {
+      await ckAlert('配置错误：server "' + name + '" 的定义必须是对象');
+      return;
+    }
+    const hasUrl = def.url !== undefined;
+    const hasCommand = def.command !== undefined;
+    if (hasUrl) {
+      if (typeof def.url !== 'string' || !def.url.trim()) {
+        await ckAlert('配置错误：server "' + name + '" 的 url 必须是非空字符串');
+        return;
+      }
+      if (hasCommand) {
+        await ckAlert('配置错误：server "' + name + '" 不能同时指定 url 和 command');
+        return;
+      }
+    } else if (hasCommand) {
+      if (typeof def.command !== 'string' || !def.command.trim()) {
+        await ckAlert('配置错误：server "' + name + '" 的 command 必须是非空字符串');
+        return;
+      }
+    } else {
+      await ckAlert('配置错误：server "' + name + '" 缺少 command 或 url');
+      return;
+    }
+    if (def.args !== undefined && !Array.isArray(def.args)) {
+      await ckAlert('配置错误：server "' + name + '" 的 args 必须是数组');
+      return;
+    }
+    if (def.env !== undefined && (typeof def.env !== 'object' || def.env === null || Array.isArray(def.env))) {
+      await ckAlert('配置错误：server "' + name + '" 的 env 必须是对象');
+      return;
+    }
+    if (def.headers !== undefined && (typeof def.headers !== 'object' || def.headers === null || Array.isArray(def.headers))) {
+      await ckAlert('配置错误：server "' + name + '" 的 headers 必须是对象');
+      return;
+    }
+  }
+
+  if (!api.upsertMcpServer || !api.removeMcpServer) {
+    await ckAlert('当前版本不支持保存 MCP 配置');
+    return;
+  }
+
+  try {
+    // 先删除 JSON 里不存在的旧 server（只针对用户级，避免误删项目级）
+    const oldRes = await api.listUserMcpServers!();
+    const oldServers = (oldRes && oldRes.success && oldRes.servers) || [];
+    const newNames = new Set(Object.keys(parsed.mcpServers));
+    for (const old of oldServers) {
+      if (!newNames.has(old.name)) {
+        await api.removeMcpServer!(old.name);
+      }
+    }
+    // 逐个 upsert
+    for (const [name, def] of Object.entries(parsed.mcpServers) as [string, any][]) {
+      const server = {
+        name,
+        type: def && def.url ? 'http' : 'stdio',
+        command: def && def.command,
+        args: (def && def.args) || [],
+        url: def && def.url,
+        headers: def && def.headers,
+        env: def && def.env,
+      };
+      await api.upsertMcpServer!(server);
+    }
+    await ckAlert('配置已保存');
+    await loadMcpServers();
+    await loadMcpJson();
+  } catch (err: any) {
+    await ckAlert('保存失败: ' + (err.message || err));
+  }
+}
 
 export async function loadMcpServers(): Promise<void> {
   const listEl = document.getElementById('mcp-list');
@@ -47,3 +173,26 @@ export async function loadMcpServers(): Promise<void> {
 }
 
 document.getElementById('mcp-refresh')?.addEventListener('click', loadMcpServers);
+
+// 编辑区开关
+document.getElementById('mcp-edit-toggle')?.addEventListener('click', async () => {
+  const editor = document.getElementById('mcp-editor');
+  if (!editor) return;
+  const hidden = editor.classList.contains('cuckoo-hidden');
+  if (hidden) {
+    editor.classList.remove('cuckoo-hidden');
+    await loadMcpJson();
+  } else {
+    editor.classList.add('cuckoo-hidden');
+  }
+});
+
+document.getElementById('mcp-editor-close')?.addEventListener('click', () => {
+  document.getElementById('mcp-editor')?.classList.add('cuckoo-hidden');
+});
+
+document.getElementById('mcp-save')?.addEventListener('click', async () => {
+  const ok = await ckConfirm('保存将覆盖用户级 MCP 配置，确定继续？', '确认保存');
+  if (!ok) return;
+  await saveMcpJson();
+});

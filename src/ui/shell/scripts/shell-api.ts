@@ -100,6 +100,9 @@ export interface ShellAPI {
   deleteAgentFile?: (agentPath: string) => Promise<any>;
   // MCP
   listMcpServers?: () => Promise<any>;
+  listUserMcpServers?: () => Promise<any>;
+  upsertMcpServer?: (server: any) => Promise<any>;
+  removeMcpServer?: (name: string) => Promise<any>;
   enableMcpServer?: (name: string) => Promise<any>;
   disableMcpServer?: (name: string) => Promise<any>;
   // 窗口

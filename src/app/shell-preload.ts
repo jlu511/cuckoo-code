@@ -149,6 +149,9 @@ const shellAPI = {
   deleteAgentFile: (agentPath: string) => ipcRenderer.invoke('delete-agent-file', { agentPath }),
   // ========== MCP ==========
   listMcpServers: () => ipcRenderer.invoke('list-mcp-servers', {}),
+  listUserMcpServers: () => ipcRenderer.invoke('list-mcp-servers', { scope: 'user' }),
+  upsertMcpServer: (server: any) => ipcRenderer.invoke('upsert-mcp-server', { server }),
+  removeMcpServer: (name: string) => ipcRenderer.invoke('remove-mcp-server', { name }),
   enableMcpServer: (name: string) => ipcRenderer.invoke('enable-mcp-server', { name }),
   disableMcpServer: (name: string) => ipcRenderer.invoke('disable-mcp-server', { name }),
   appendSnippet: (text: string) => ipcRenderer.invoke('append-to-input', { text }),
