@@ -5,6 +5,7 @@ import { exec } from 'node:child_process';
 import path from 'node:path';
 import { decodeOutput, normalizeCommand } from '../../infra/decode-output.js';
 import { isDangerous, DANGEROUS_CMDS } from '../../infra/dangerous-commands.js';
+import { checkCommandPermission, checkPathPermission } from '../../infra/permission.js';
 
 // ========== D12：API 契约元数据（构建期生成 api.d.ts）==========
 export const apiMetas: ToolApiMeta[] = [

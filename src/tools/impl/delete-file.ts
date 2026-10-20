@@ -2,6 +2,7 @@ import { Tool } from '../core/Tool.js';
 import type { ToolApiMeta } from '../core/Tool.js';
 import { ToolResult } from '../core/ToolResult.js';
 import { isProtectedPath } from '../../infra/protected-paths.js';
+import { checkPathPermission } from '../../infra/permission.js';
 import fs from 'node:fs';
 import path from 'node:path';
 

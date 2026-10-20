@@ -72,7 +72,7 @@
     "linux"
   ],
   "build": {
-    "appId": "com.cuckoo.cuckoo-code",
+    "appId": "com.cuckoo.cuckoo-test",
     "productName": "Cuckoo-Code",
     "publish": [
       {

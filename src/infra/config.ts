@@ -8,13 +8,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
+export type AccessMode = 'readOnly' | 'workspaceWrite' | 'fullAccess';
+
 export interface UserConfig {
   /** 是否启用用户记忆功能（默认 false） */
   memoriesEnabled: boolean;
+  /** 文件与命令执行权限模式（默认 workspaceWrite） */
+  accessMode: AccessMode;
 }
 
 const DEFAULT_CONFIG: UserConfig = {
   memoriesEnabled: false,
+  accessMode: 'workspaceWrite',
 };
 
 /** 用户级目录（可用 CUCKOO_HOME 覆盖，供测试隔离） */
@@ -34,7 +39,10 @@ function readConfig(): UserConfig {
     if (fs.existsSync(file)) {
       const raw = JSON.parse(fs.readFileSync(file, 'utf-8'));
       if (raw && typeof raw === 'object') {
-        return { memoriesEnabled: raw.memoriesEnabled === true };
+        return {
+          memoriesEnabled: raw.memoriesEnabled === true,
+          accessMode: ['readOnly', 'workspaceWrite', 'fullAccess'].includes(raw.accessMode) ? raw.accessMode : 'workspaceWrite',
+        };
       }
     }
   } catch (err: any) {
@@ -67,6 +75,16 @@ function setMemoriesEnabled(enabled: boolean): boolean {
   return writeConfig({ memoriesEnabled: enabled === true });
 }
 
+/** 获取当前权限模式 */
+function getAccessMode(): AccessMode {
+  return readConfig().accessMode;
+}
+
+/** 设置权限模式 */
+function setAccessMode(mode: AccessMode): boolean {
+  return writeConfig({ accessMode: mode });
+}
+
 /**
  * 已启用的工具功能分组（用于注入对应的 API 契约文件 api.<feature>.d.ts）。
  * 目前仅 'memories'。
@@ -77,4 +95,4 @@ function getEnabledToolFeatures(): string[] {
   return feats;
 }
 
-export { readConfig, writeConfig, isMemoriesEnabled, setMemoriesEnabled, getEnabledToolFeatures, getConfigFile };
+export { readConfig, writeConfig, isMemoriesEnabled, setMemoriesEnabled, getAccessMode, setAccessMode, getEnabledToolFeatures, getConfigFile };

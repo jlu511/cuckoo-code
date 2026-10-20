@@ -1,0 +1,29 @@
+            <!-- ===== 权限 ===== -->
+            <div class="ck-tab" data-panel="permission">
+              <div class="ck-list-header" style="padding: 10px;">
+                <span class="ck-list-title" style="font-weight:bold; font-size:14px;">文件与命令权限</span>
+              </div>
+              <div class="ck-perm-list" style="padding: 10px;">
+                <label class="ck-perm-item" style="display:flex; align-items:flex-start; margin-bottom:16px; cursor:pointer;">
+                  <input type="radio" name="access-mode" value="readOnly" style="margin-right:8px; margin-top:2px;">
+                  <div>
+                    <div style="font-weight:bold; font-size:13px;">仅可查看</div>
+                    <div style="font-size:12px; color:var(--ck-text-2); margin-top:4px; line-height:1.4;">拦截所有写入、修改、删除操作。禁用系统命令执行（如 bash、pwsh）。</div>
+                  </div>
+                </label>
+                <label class="ck-perm-item" style="display:flex; align-items:flex-start; margin-bottom:16px; cursor:pointer;">
+                  <input type="radio" name="access-mode" value="workspaceWrite" style="margin-right:8px; margin-top:2px;">
+                  <div>
+                    <div style="font-weight:bold; font-size:13px;">工作区内修改</div>
+                    <div style="font-size:12px; color:var(--ck-text-2); margin-top:4px; line-height:1.4;">允许读写当前工作区内的文件。尝试越界修改将被拦截。</div>
+                  </div>
+                </label>
+                <label class="ck-perm-item" style="display:flex; align-items:flex-start; margin-bottom:16px; cursor:pointer;">
+                  <input type="radio" name="access-mode" value="fullAccess" style="margin-right:8px; margin-top:2px;">
+                  <div>
+                    <div style="font-weight:bold; font-size:13px;">完全权限</div>
+                    <div style="font-size:12px; color:var(--ck-text-2); margin-top:4px; line-height:1.4;">允许读写任意路径（仅保留极少数系统核心保护机制）。请谨慎使用。</div>
+                  </div>
+                </label>
+              </div>
+            </div>

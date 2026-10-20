@@ -3,6 +3,7 @@ import type { ToolApiMeta } from '../core/Tool.js';
 import { ToolResult } from '../core/ToolResult.js';
 import { normalizeLineEndings, detectLineEndings, restoreLineEndings } from '../../infra/eol.js';
 import { isProtectedPath } from '../../infra/protected-paths.js';
+import { checkPathPermission } from '../../infra/permission.js';
 import fs from 'node:fs';
 import path from 'node:path';
 

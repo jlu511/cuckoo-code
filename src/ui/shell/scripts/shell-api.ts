@@ -44,6 +44,9 @@ export interface ShellAPI {
   wgRename?: (groupId: string, name: string) => Promise<any>;
   wgDelete?: (groupId: string) => Promise<any>;
   wgSwitch?: (groupId: string) => Promise<any>;
+  // 权限模式
+  getAccessMode?: () => Promise<any>;
+  setAccessMode?: (mode: string) => Promise<any>;
   // 记忆
   getMemoriesEnabled?: () => Promise<any>;
   setMemoriesEnabled?: (enabled: boolean) => Promise<any>;

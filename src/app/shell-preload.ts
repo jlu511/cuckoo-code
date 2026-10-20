@@ -191,6 +191,9 @@ const shellAPI = {
   getAutoCompact: () => ipcRenderer.invoke('get-autocompact'),
   saveAutoCompact: (data: any) => ipcRenderer.invoke('save-autocompact', { data }),
   triggerCompact: () => ipcRenderer.invoke('trigger-compact'),
+  // ========== 权限 ==========
+  getAccessMode: () => ipcRenderer.invoke('get-access-mode'),
+  setAccessMode: (mode: string) => ipcRenderer.invoke('set-access-mode', { mode }),
   // ========== 记忆 ==========
   listMemories: () => ipcRenderer.invoke('list-memories'),
   getMemoriesEnabled: () => ipcRenderer.invoke('get-memories-enabled'),

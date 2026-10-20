@@ -25,6 +25,7 @@ import { loadPlugins } from './pages/plugins.js';
 import { initPluginShell } from './plugin-shell.js';
 import { initThemePresenter } from './theme-presenter.js';
 import { loadMemories } from './pages/memories.js';
+import { loadPermission } from './pages/permission.js';
 
 // 注册 tab → 加载函数（sidebar 点击时调用）
 registerTab('workspaces', loadWorkspaces);
@@ -41,6 +42,7 @@ registerTab('settings', loadSettings);
 registerTab('conversations', loadConversations);
 registerTab('plugins', loadPlugins);
 registerTab('memories', loadMemories);
+registerTab('permission', loadPermission);
 
 // 预加载：工作区（默认页）+ 提示词 + 自动压缩配置
 try { loadWorkspaces(); } catch (_) { /* ignore */ }
