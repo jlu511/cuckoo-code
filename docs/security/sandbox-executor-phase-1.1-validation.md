@@ -58,7 +58,18 @@ Node 测试驱动 (PID 11344)
 
 **当前 Windows 10 测试环境下，已覆盖的三轮取消场景均成功清理目标进程树；正常退出及重复清理场景通过。PID 复用竞态、taskkill 启动失败等情形尚未验证，不应据此宣称所有 Windows 进程清理场景均已安全覆盖。**
 
-## 8. Phase 1.1 能力边界
+## 8. Phase 2 原生沙箱结论（2026-10-21 追加）
+
+Phase 2 尝试了 AppContainer 与 Restricted Token 两种 Windows 原生隔离方案，均未达到生产准入要求，已正式结束。
+
+- **AppContainer**：在不修改 `System32` ACL 的前提下，无法启动 `cmd.exe` 执行命令。
+- **Restricted Token**：能启动 `cmd.exe` 内置命令，但独立外部程序（`whoami.exe`）返回 `0xC0000142`（`STATUS_DLL_INIT_FAILED`）。
+
+**Phase 1 的应用层审批不代表 OS 级隔离。** 经批准的命令仍继承当前用户的完整系统权限。授权目录外的访问限制尚未得到 OS 级保障。
+
+完整技术报告：[`phase-2-sandbox-conclusion.md`](./phase-2-sandbox-conclusion.md)
+
+## 9. Phase 1.1 能力边界
 
 - **应用层审批 ≠ OS 级沙箱**：批准后的子进程拥有与 Cuckoo 主进程相同的系统权限。
 - **未接入入口**：`pwsh.ts`、MCP 客户端、插件系统仍未经过 `SandboxExecutor`，可绕过审批。
