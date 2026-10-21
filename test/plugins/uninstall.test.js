@@ -65,4 +65,3 @@ test('uninstallCuckooPlugin: 非法 id 直接拒绝，不抛异常', async () =>
   const ok = uninstallCuckooPlugin('../evil');
   expect(ok).toBe(false);
 });
-
