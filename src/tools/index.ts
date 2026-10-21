@@ -4,6 +4,9 @@
  */
 import { ToolRegistry } from './core/ToolRegistry.js';
 import { JsRunner } from './runtime/JsRunner.js';
+import { injectSandboxExecutor } from './core/executor.js';
+import { DefaultApprovalHandler } from './core/default-handler.js';
+import { DefaultProcessRunner } from './core/default-runner.js';
 import { WriteTool } from './impl/write.js';
 import { ReadTool } from './impl/read.js';
 import { ReadLinesTool } from './impl/read-lines.js';
@@ -25,6 +28,9 @@ import { RunAgentTool } from './impl/run-agent.js';
 import { GoalDoneTool } from './impl/goal-done.js';
 import { NameConversationTool } from './impl/name-conversation.js';
 import { RememberTool, ForgetMemoryTool } from './impl/remember.js';
+
+// 初始化安全执行器
+injectSandboxExecutor(new DefaultApprovalHandler(), new DefaultProcessRunner());
 
 // 创建全局工具注册表
 const registry = new ToolRegistry();
