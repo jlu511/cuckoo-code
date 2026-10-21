@@ -14,7 +14,6 @@ export interface ProcessRequest {
   cwd: string;
   env: Record<string, string>;
   timeoutMs?: number;
-  /** AI 提供的用途说明（用于审批弹窗展示） */
   description?: string;
 }
 
@@ -25,7 +24,6 @@ export interface ShellRequest {
   cwd: string;
   env: Record<string, string>;
   timeoutMs?: number;
-  /** AI 提供的用途说明（用于审批弹窗展示） */
   description?: string;
 }
 
@@ -62,6 +60,7 @@ export interface ProcessResult {
   stderr: string;
   exitCode: number;
   isTimeout?: boolean;
+  isCancelled?: boolean;
 }
 
 export interface ProcessRunner {
@@ -72,83 +71,164 @@ export interface AuditLogger {
   log(snapshot: ExecSnapshot, result?: ProcessResult, error?: string): void;
 }
 
+export interface SandboxOptions {
+  /** pending 状态最长存活时间（毫秒）。超时后视为 expired，拒绝执行。默认 5 分钟。 */
+  pendingTtlMs?: number;
+  /** 拒绝熔断窗口（毫秒）。同一 taskId + 签名在此窗口内重试将被直接拦截。默认 60 秒。 */
+  denialWindowMs?: number;
+}
+
+const DEFAULT_PENDING_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_DENIAL_WINDOW_MS = 60 * 1000;
+const SENSITIVE_ENV_RE = /TOKEN|API_KEY|PASSWORD|SECRET|AUTH|CREDENTIAL/i;
+
+/**
+ * 对快照做深拷贝并对敏感 env 值脱敏。
+ * 注意：脱敏只影响审计/日志，不修改实际执行用的快照。
+ */
+function sanitizeSnapshot(snap: ExecSnapshot): ExecSnapshot {
+  const clone: ExecSnapshot = JSON.parse(JSON.stringify(snap));
+  const env = clone.request.env;
+  if (env && typeof env === 'object') {
+    for (const key of Object.keys(env)) {
+      if (SENSITIVE_ENV_RE.test(key)) {
+        env[key] = '[REDACTED]';
+      }
+    }
+  }
+  return clone;
+}
+
 export class SandboxExecutor {
   private registry = new Map<string, ExecSnapshot>();
   private denials = new Map<string, number>();
   private activeControllers = new Map<string, AbortController>();
+  /** 相同 taskId + 签名并发去重锁 */
+  private runningSignatures = new Set<string>();
+
+  private readonly pendingTtlMs: number;
+  private readonly denialWindowMs: number;
 
   constructor(
     private approvalHandler: ApprovalHandler,
     private processRunner: ProcessRunner,
-    private auditLogger?: AuditLogger
-  ) {}
+    private auditLogger?: AuditLogger,
+    options?: SandboxOptions
+  ) {
+    this.pendingTtlMs = options?.pendingTtlMs ?? DEFAULT_PENDING_TTL_MS;
+    this.denialWindowMs = options?.denialWindowMs ?? DEFAULT_DENIAL_WINDOW_MS;
+  }
 
-  async execute(req: ExecRequest, taskId: string, sessionId: string): Promise<ProcessResult> {
-    const risk = this.assessRisk(req);
+  /**
+   * 执行入口。
+   * @param req 结构化请求
+   * @param taskId 任务 ID（用于熔断与并发去重）
+   * @param sessionId 发起请求的会话 ID
+   * @param activeSessionId 可选的当前活动会话 ID；若传入，则要求与 sessionId 一致，否则拒绝
+   */
+  async execute(
+    req: ExecRequest,
+    taskId: string,
+    sessionId: string,
+    activeSessionId?: string
+  ): Promise<ProcessResult> {
+    // 0. 会话切换校验（仅在调用方提供了活动会话时执行）
+    if (activeSessionId !== undefined && activeSessionId !== sessionId) {
+      throw new Error('安全策略拒绝：请求所属会话与当前活动会话不一致。');
+    }
+
     const sig = this.getSignature(req);
+    const denialKey = this.getDenialKey(taskId, sig);
+    const runningKey = denialKey;
 
-    if (this.isRecentlyDenied(sig)) {
-      const msg = '操作被终止：检测到针对相同目标的重复请求（疑似绕过审批）。';
-      this.auditLogger?.log({ id: 'pre-check', taskId, sessionId, request: req, status: 'denied', createdAt: Date.now() }, undefined, msg);
+    // 1. 拒绝熔断
+    if (this.isRecentlyDenied(denialKey)) {
+      const msg = '操作被终止：该命令在本任务内近期已被拒绝，请等待熔断窗口结束。';
+      this.auditLogger?.log(
+        sanitizeSnapshot({ id: 'pre-check', taskId, sessionId, request: req, status: 'denied', createdAt: Date.now() }),
+        undefined,
+        msg
+      );
       throw new Error(msg);
     }
 
-    const snapshot: ExecSnapshot = {
-      id: crypto.randomUUID(),
-      taskId, sessionId, request: req, status: 'pending', createdAt: Date.now(),
-    };
-    this.registry.set(snapshot.id, snapshot);
+    // 2. 并发去重（相同 taskId + 签名）
+    if (this.runningSignatures.has(runningKey)) {
+      throw new Error('安全策略拒绝：相同请求正在审批或执行中，请等待其完成。');
+    }
+    this.runningSignatures.add(runningKey);
 
-    let decision: ApprovalDecision;
     try {
-      const dto: ApprovalDTO = {
-        id: snapshot.id,
-        request: JSON.parse(JSON.stringify(req)),
-        riskLevel: risk.level,
-        riskReasons: risk.reasons,
+      const snapshot: ExecSnapshot = {
+        id: crypto.randomUUID(),
+        taskId, sessionId, request: req, status: 'pending', createdAt: Date.now(),
       };
-      decision = await this.approvalHandler.requestApproval(dto);
-    } catch (err: any) {
-      this.registry.delete(snapshot.id);
-      throw new Error('审批过程发生异常: ' + (err.message || err));
-    }
+      this.registry.set(snapshot.id, snapshot);
 
-    const snap = this.registry.get(snapshot.id);
-    if (!snap || snap.status !== 'pending') {
-      throw new Error('快照状态异常：该请求已被处理或过期。');
-    }
+      // 3. 审批
+      const risk = this.assessRisk(req);
+      let decision: ApprovalDecision;
+      try {
+        const dto: ApprovalDTO = {
+          id: snapshot.id,
+          request: JSON.parse(JSON.stringify(req)),
+          riskLevel: risk.level,
+          riskReasons: risk.reasons,
+        };
+        decision = await this.approvalHandler.requestApproval(dto);
+      } catch (err: any) {
+        this.registry.delete(snapshot.id);
+        throw new Error('审批过程发生异常: ' + (err.message || err));
+      }
 
-    if (decision === 'deny') {
-      snap.status = 'denied';
-      this.recordDenial(sig);
-      this.auditLogger?.log(snap, undefined, 'User denied');
-      throw new Error('用户拒绝了此操作。');
-    }
+      // 4. 校验快照状态与过期
+      const snap = this.registry.get(snapshot.id);
+      if (!snap || snap.status !== 'pending') {
+        throw new Error('快照状态异常：该请求已被处理或过期。');
+      }
+      const ageMs = Date.now() - snap.createdAt;
+      if (ageMs > this.pendingTtlMs) {
+        snap.status = 'expired';
+        this.auditLogger?.log(sanitizeSnapshot(snap), undefined, 'Pending expired before approval');
+        throw new Error('安全策略拒绝：审批结果返回时请求已过期（' + ageMs + 'ms）。');
+      }
 
-    snap.status = 'running';
-    const ac = new AbortController();
-    this.activeControllers.set(snap.id, ac);
+      if (decision === 'deny') {
+        snap.status = 'denied';
+        this.recordDenial(denialKey);
+        this.auditLogger?.log(sanitizeSnapshot(snap), undefined, 'User denied');
+        throw new Error('用户拒绝了此操作。');
+      }
 
-    try {
-      const result = await this.processRunner.run(snap.request, ac.signal);
-      if (result.isTimeout) snap.status = 'timed_out';
-      else if (result.exitCode !== 0) snap.status = 'failed';
-      else snap.status = 'succeeded';
-      
-      this.auditLogger?.log(snap, result);
-      return result;
-    } catch (err: any) {
-      snap.status = 'failed';
-      this.auditLogger?.log(snap, undefined, err.message || String(err));
-      throw err;
+      // 5. 执行（pending -> running 在单线程内原子）
+      snap.status = 'running';
+      const ac = new AbortController();
+      this.activeControllers.set(snap.id, ac);
+
+      try {
+        const result = await this.processRunner.run(snap.request, ac.signal);
+        if (result.isCancelled) snap.status = 'cancelled';
+        else if (result.isTimeout) snap.status = 'timed_out';
+        else if (result.exitCode !== 0) snap.status = 'failed';
+        else snap.status = 'succeeded';
+
+        this.auditLogger?.log(sanitizeSnapshot(snap), result);
+        return result;
+      } catch (err: any) {
+        snap.status = 'failed';
+        this.auditLogger?.log(sanitizeSnapshot(snap), undefined, err.message || String(err));
+        throw err;
+      } finally {
+        this.activeControllers.delete(snap.id);
+        setTimeout(() => this.registry.delete(snapshot.id), 60 * 1000);
+      }
     } finally {
-      this.activeControllers.delete(snap.id);
-      setTimeout(() => this.registry.delete(snapshot.id), 60 * 1000);
+      this.runningSignatures.delete(runningKey);
     }
   }
 
   /**
-   * 外部取消执行
+   * 外部取消执行。
    */
   cancel(snapshotId: string): boolean {
     const ac = this.activeControllers.get(snapshotId);
@@ -161,7 +241,6 @@ export class SandboxExecutor {
   }
 
   private assessRisk(req: ExecRequest): { level: 'L0'|'L1'|'L2'|'L3', reasons: string[] } {
-    // 设计 v3：默认全部 L2，取消白名单
     return { level: 'L2', reasons: ['默认策略：应用层执行请求'] };
   }
 
@@ -172,22 +251,30 @@ export class SandboxExecutor {
     return 'proc:' + req.executable + ':' + req.args.join(' ') + ':' + req.cwd;
   }
 
-  private isRecentlyDenied(sig: string): boolean {
-    const last = this.denials.get(sig);
-    if (!last) return false;
-    return Date.now() - last < 60 * 1000;
+  private getDenialKey(taskId: string, sig: string): string {
+    return taskId + '::' + sig;
   }
 
-  private recordDenial(sig: string): void {
-    this.denials.set(sig, Date.now());
+  private isRecentlyDenied(denialKey: string): boolean {
+    const last = this.denials.get(denialKey);
+    if (!last) return false;
+    return Date.now() - last < this.denialWindowMs;
+  }
+
+  private recordDenial(denialKey: string): void {
+    this.denials.set(denialKey, Date.now());
   }
 }
 
-// ==================== 依赖注入 ====================
 let globalExecutor: SandboxExecutor | null = null;
 
-export function injectSandboxExecutor(handler: ApprovalHandler, runner: ProcessRunner, logger?: AuditLogger): void {
-  globalExecutor = new SandboxExecutor(handler, runner, logger);
+export function injectSandboxExecutor(
+  handler: ApprovalHandler,
+  runner: ProcessRunner,
+  logger?: AuditLogger,
+  options?: SandboxOptions
+): void {
+  globalExecutor = new SandboxExecutor(handler, runner, logger, options);
 }
 
 export function getSandboxExecutor(): SandboxExecutor {

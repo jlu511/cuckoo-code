@@ -1,100 +1,118 @@
 import { test, expect, vi } from 'vitest';
 import { SandboxExecutor } from '../../src/tools/core/executor.js';
 
-// 安全的 Mock：不执行真实系统命令
-const mockRunner = {
-  run: vi.fn(async (req) => {
-    return { stdout: 'mock', stderr: '', exitCode: 0 };
-  })
+// ============ 通用 helpers ============
+
+function makeReq(rawCommand = 'echo hi') {
+  return { type: 'shell', shellType: 'cmd', rawCommand, cwd: 'D:\\', env: {} };
+}
+
+const okRunner = () => {
+  const runner = {
+    calls: 0,
+    run: async () => {
+      runner.calls++;
+      return { stdout: 'ok', stderr: '', exitCode: 0 };
+    }
+  };
+  return runner;
 };
 
-test('TC-08: 连续两次批准同一个请求，只能启动一次进程', async () => {
-  let handlerCalls = 0;
-  const handler = {
-    requestApproval: vi.fn(async () => {
-      handlerCalls++;
-      return 'allow_once';
-    })
+const okHandler = () => ({ requestApproval: async () => 'allow_once' });
+
+// ============ TC-08：并发去重（真实行为测试） ============
+
+test('TC-08: 相同 taskId + 相同请求并发 execute，最多启动一次进程', async () => {
+  const runner = {
+    calls: 0,
+    run: async () => {
+      runner.calls++;
+      // 模拟慢执行，让两个并发请求在时间上重叠
+      await new Promise((r) => setTimeout(r, 30));
+      return { stdout: 'ok', stderr: '', exitCode: 0 };
+    }
   };
-  const executor = new SandboxExecutor(handler, mockRunner);
-  const req = { type: 'shell', shellType: 'cmd', rawCommand: 'echo hello', cwd: 'D:\\', env: {} };
+  const executor = new SandboxExecutor(okHandler(), runner);
+  const req = makeReq('echo concurrent');
 
-  // 第一次正常执行
-  await executor.execute(req, 'task1', 'session1');
-  expect(mockRunner.run).toHaveBeenCalledTimes(1);
+  // 同时发起两次（不 await 第一条）
+  const p1 = executor.execute(req, 'taskA', 'sessionA');
+  const p2 = executor.execute(req, 'taskA', 'sessionA');
 
-  // 模拟快照已被清理（通过手动让时间快进或修改状态，这里我们通过并发调用来测试竞态）
-  // 由于当前 execute 是一次性阻塞，真正的并发导致两个进程启动极难发生。
-  // 我们测试的是：一旦快照状态变成 non-pending，再次尝试会失败。
+  // 第二条必须立刻被拒绝（正在审批或执行中）
+  await expect(p2).rejects.toThrow(/正在审批或执行中/);
+
+  // 第一条正常完成
+  const r1 = await p1;
+  expect(r1.exitCode).toBe(0);
+
+  // 关键断言：runner 只被调用一次
+  expect(runner.calls).toBe(1);
 });
 
-test('TC-09: 会话结束后，快照被清理，无法重放执行', async () => {
-  const handler = { requestApproval: async () => 'allow_once' };
-  const executor = new SandboxExecutor(handler, mockRunner);
-  const req = { type: 'shell', shellType: 'cmd', rawCommand: 'echo hello', cwd: 'D:\\', env: {} };
+// ============ TC-09：pending 过期后拒绝（真实行为测试） ============
 
-  // 使用伪造的 setTimeout 让 60 秒后的清理立即执行
-  vi.useFakeTimers();
-  const promise = executor.execute(req, 'task1', 'session1');
-  vi.runAllTimers(); // 这会触发 setTimeout 清理
-  await promise;
-  
-  // 强制尝试让内部快照重新出现在 pending 状态是不允许的，因为我们并不直接暴露内部 Map
-  // 但我们可以验证内存在 60 秒后被释放（通过某种方式检查，由于私有属性不可见，这里通过行为验证）
-  // 实际上 TC-09 的核心是确保快照一旦离开 pending，再次提交不会绕过审批。
-  
-  // 我们无法直接取得 snapshotId，因为它是内部生成的。但如果 AI 伪造了一个请求并试图复用状态，是不行的。
-  vi.useRealTimers();
+test('TC-09: pending 超过 TTL 后返回审批结果，必须拒绝且不启动进程', async () => {
+  const runner = okRunner();
+
+  // 让审批 handler 延迟 200ms 返回，模拟"审批弹窗挂在后台很久"
+  const slowHandler = {
+    requestApproval: async () => {
+      await new Promise((r) => setTimeout(r, 200));
+      return 'allow_once';
+    }
+  };
+
+  // 注入极小 TTL（50ms）
+  const executor = new SandboxExecutor(slowHandler, runner, undefined, { pendingTtlMs: 50 });
+  const req = makeReq('echo expire-test');
+
+  await expect(executor.execute(req, 'taskA', 'sessionA')).rejects.toThrow(/已过期/);
+
+  // 关键断言：runner 从未被调用
+  expect(runner.calls).toBe(0);
 });
 
-test('TC-10: 前端篡改展示副本，不影响内部执行', async () => {
+// ============ TC-10：DTO 篡改不影响执行 ============
+
+test('TC-10: 前端篡改 DTO 不影响内部执行的请求', async () => {
   let capturedCmd = '';
   const mockHandler = {
     requestApproval: async (dto) => {
-      // 模拟前端恶意篡改请求
       dto.request.rawCommand = 'rm -rf / (tampered)';
       return 'allow_once';
     }
   };
-  
-  const mockRunner = {
-    run: vi.fn(async (req) => {
+  const runner = {
+    run: async (req) => {
       capturedCmd = req.rawCommand;
-      return { stdout: 'mock', stderr: '', exitCode: 0 };
-    })
+      return { stdout: 'ok', stderr: '', exitCode: 0 };
+    }
   };
 
-  const executor = new SandboxExecutor(mockHandler, mockRunner);
-  const req = { type: 'shell', shellType: 'cmd', rawCommand: 'echo safe', cwd: 'D:\\', env: {} };
-  
-  await executor.execute(req, 'task1', 'session1');
-  
-  // 断言：执行器传入 runner 的必须是原请求，而不是被 handler 篡改后的请求
+  const executor = new SandboxExecutor(mockHandler, runner);
+  await executor.execute(makeReq('echo safe'), 'taskA', 'sessionA');
+
   expect(capturedCmd).toBe('echo safe');
   expect(capturedCmd).not.toBe('rm -rf / (tampered)');
 });
 
-test('TC-11: 执行期间取消，状态机是否正确记录', async () => {
-  // 模拟一个监听 abort 事件的慢速 runner
+// ============ TC-11：主动取消 ============
+
+test('TC-11: 主动取消后状态为 cancelled，且不会误判为 timed_out', async () => {
   const slowRunner = {
     run: (req, signal) => {
-      return new Promise((resolve, reject) => {
+      return new Promise((resolve) => {
         if (signal.aborted) {
-          return reject(new Error('Aborted'));
+          return resolve({ stdout: '', stderr: '', exitCode: -1, isCancelled: true });
         }
         signal.addEventListener('abort', () => {
-          reject(new Error('Aborted'));
+          resolve({ stdout: '', stderr: '', exitCode: -1, isCancelled: true });
         });
       });
     }
   };
 
-  const handler = { requestApproval: async () => 'allow_once' };
-  const executor = new SandboxExecutor(handler, slowRunner);
-  const req = { type: 'shell', shellType: 'cmd', rawCommand: 'ping -t 127.0.0.1', cwd: 'D:\\', env: {} };
-
-  // 由于内部快照 id 是动态生成的，我们需要拦截 execute 的过程拿到 id
-  // 这里为了测试，我们通过 mock handler 拿到 dto 里的 snapshot id
   let snapId = '';
   const captureHandler = {
     requestApproval: async (dto) => {
@@ -102,37 +120,103 @@ test('TC-11: 执行期间取消，状态机是否正确记录', async () => {
       return 'allow_once';
     }
   };
-  const executorWithCapture = new SandboxExecutor(captureHandler, slowRunner);
 
-  const promise = executorWithCapture.execute(req, 'task1', 'session1');
-  
-  // 等待一会儿确保执行器已经进入 running 状态
-  await new Promise(r => setTimeout(r, 20));
+  const executor = new SandboxExecutor(captureHandler, slowRunner);
+  const p = executor.execute(makeReq('ping -t 127.0.0.1'), 'taskA', 'sessionA');
+  await new Promise((r) => setTimeout(r, 20));
 
-  // 外部取消
-  const cancelled = executorWithCapture.cancel(snapId);
-  expect(cancelled).toBe(true);
-
-  // 断言错误抛出
-  await expect(promise).rejects.toThrow('Aborted');
+  expect(executor.cancel(snapId)).toBe(true);
+  const result = await p;
+  expect(result.isCancelled).toBe(true);
+  expect(result.isTimeout).toBeUndefined();
 });
 
-test('拒绝熔断：同一命令被拒绝后，一分钟内再次请求直接被拦截', async () => {
-  let callCount = 0;
+// ============ 拒绝熔断：按 taskId 隔离 ============
+
+test('拒绝熔断：同一 taskId 拒绝后重试被拦截，不同 taskId 互不影响', async () => {
+  let denyCount = 0;
   const handler = {
     requestApproval: async () => {
-      callCount++;
+      denyCount++;
       return 'deny';
     }
   };
-  const executor = new SandboxExecutor(handler, mockRunner);
-  const req = { type: 'shell', shellType: 'cmd', rawCommand: 'del /q test.txt', cwd: 'D:\\', env: {} };
+  const executor = new SandboxExecutor(handler, okRunner());
+  const req = makeReq('del /q test.txt');
 
-  // 第一次，被用户拒绝
-  await expect(executor.execute(req, 'task1', 'session1')).rejects.toThrow('用户拒绝了此操作');
-  expect(callCount).toBe(1);
+  // 任务 A 被拒
+  await expect(executor.execute(req, 'taskA', 'sessA')).rejects.toThrow('用户拒绝了此操作。');
+  expect(denyCount).toBe(1);
 
-  // 第二次（模拟 AI 重试），直接报错，不会弹窗
-  await expect(executor.execute(req, 'task1', 'session1')).rejects.toThrow('疑似绕过审批');
-  expect(callCount).toBe(1); // 应该还是 1，因为第二次没走到 handler
+  // 任务 A 重试：直接拦截，不弹窗
+  await expect(executor.execute(req, 'taskA', 'sessA')).rejects.toThrow(/已被拒绝/);
+  expect(denyCount).toBe(1);
+
+  // 任务 B（不同 taskId）：应该重新弹窗，不受任务 A 影响
+  await expect(executor.execute(req, 'taskB', 'sessB')).rejects.toThrow('用户拒绝了此操作。');
+  expect(denyCount).toBe(2);
+});
+
+// ============ 审计日志脱敏 ============
+
+test('审计日志：敏感 env 值被 [REDACTED]，原始值不出现', async () => {
+  const logs = [];
+  const logger = {
+    log: (snap) => {
+      logs.push(JSON.parse(JSON.stringify(snap)));
+    }
+  };
+
+  const executor = new SandboxExecutor(okHandler(), okRunner(), logger);
+
+  // 构造一个带敏感 env 的请求
+  const req = {
+    type: 'shell',
+    shellType: 'cmd',
+    rawCommand: 'echo hello',
+    cwd: 'D:\\',
+    env: {
+      GITHUB_TOKEN: 'ghp_realsecret123',
+      API_KEY: 'sk-live-deadbeef',
+      NORMAL_VAR: 'keep-me',
+    },
+  };
+
+  await executor.execute(req, 'taskA', 'sessionA');
+
+  // 找到执行日志（非 pre-check 的）
+  const execLog = logs.find((l) => l.id !== 'pre-check' && l.request && l.request.env);
+  expect(execLog).toBeTruthy();
+
+  // 敏感值必须被脱敏
+  expect(execLog.request.env.GITHUB_TOKEN).toBe('[REDACTED]');
+  expect(execLog.request.env.API_KEY).toBe('[REDACTED]');
+  // 非敏感值原样保留
+  expect(execLog.request.env.NORMAL_VAR).toBe('keep-me');
+
+  // 原始 secret 字符串绝不出现在序列化后的日志里
+  const serialized = JSON.stringify(logs);
+  expect(serialized).not.toContain('ghp_realsecret123');
+  expect(serialized).not.toContain('sk-live-deadbeef');
+});
+
+// ============ 会话切换校验（可选参数） ============
+
+test('会话切换校验：activeSessionId 与 sessionId 不一致时拒绝执行', async () => {
+  const runner = okRunner();
+  const executor = new SandboxExecutor(okHandler(), runner);
+
+  await expect(
+    executor.execute(makeReq('echo hi'), 'taskA', 'session-old', 'session-new')
+  ).rejects.toThrow(/会话与当前活动会话不一致/);
+
+  expect(runner.calls).toBe(0);
+});
+
+test('会话切换校验：未传 activeSessionId 时不做校验（向后兼容）', async () => {
+  const runner = okRunner();
+  const executor = new SandboxExecutor(okHandler(), runner);
+  const r = await executor.execute(makeReq('echo hi'), 'taskA', 'sessionA');
+  expect(r.exitCode).toBe(0);
+  expect(runner.calls).toBe(1);
 });
