@@ -1,4 +1,4 @@
-import { test, expect, vi } from 'vitest';
+import { test, expect } from 'vitest';
 import { SandboxExecutor } from '../../src/tools/core/executor.js';
 
 // ============ 通用 helpers ============
@@ -20,42 +20,38 @@ const okRunner = () => {
 
 const okHandler = () => ({ requestApproval: async () => 'allow_once' });
 
-// ============ TC-08：并发去重（真实行为测试） ============
+/** 固定返回同一个会话 ID 的 resolver */
+const fixedResolver = (id) => () => id;
+
+// ============ TC-08：并发去重 ============
 
 test('TC-08: 相同 taskId + 相同请求并发 execute，最多启动一次进程', async () => {
   const runner = {
     calls: 0,
     run: async () => {
       runner.calls++;
-      // 模拟慢执行，让两个并发请求在时间上重叠
       await new Promise((r) => setTimeout(r, 30));
       return { stdout: 'ok', stderr: '', exitCode: 0 };
     }
   };
   const executor = new SandboxExecutor(okHandler(), runner);
   const req = makeReq('echo concurrent');
+  const resolver = fixedResolver('sessionA');
 
-  // 同时发起两次（不 await 第一条）
-  const p1 = executor.execute(req, 'taskA', 'sessionA');
-  const p2 = executor.execute(req, 'taskA', 'sessionA');
+  const p1 = executor.execute(req, 'taskA', 'sessionA', resolver);
+  const p2 = executor.execute(req, 'taskA', 'sessionA', resolver);
 
-  // 第二条必须立刻被拒绝（正在审批或执行中）
   await expect(p2).rejects.toThrow(/正在审批或执行中/);
 
-  // 第一条正常完成
   const r1 = await p1;
   expect(r1.exitCode).toBe(0);
-
-  // 关键断言：runner 只被调用一次
   expect(runner.calls).toBe(1);
 });
 
-// ============ TC-09：pending 过期后拒绝（真实行为测试） ============
+// ============ TC-09：pending 过期 ============
 
 test('TC-09: pending 超过 TTL 后返回审批结果，必须拒绝且不启动进程', async () => {
   const runner = okRunner();
-
-  // 让审批 handler 延迟 200ms 返回，模拟"审批弹窗挂在后台很久"
   const slowHandler = {
     requestApproval: async () => {
       await new Promise((r) => setTimeout(r, 200));
@@ -63,13 +59,10 @@ test('TC-09: pending 超过 TTL 后返回审批结果，必须拒绝且不启动
     }
   };
 
-  // 注入极小 TTL（50ms）
   const executor = new SandboxExecutor(slowHandler, runner, undefined, { pendingTtlMs: 50 });
   const req = makeReq('echo expire-test');
 
-  await expect(executor.execute(req, 'taskA', 'sessionA')).rejects.toThrow(/已过期/);
-
-  // 关键断言：runner 从未被调用
+  await expect(executor.execute(req, 'taskA', 'sessionA', fixedResolver('sessionA'))).rejects.toThrow(/已过期/);
   expect(runner.calls).toBe(0);
 });
 
@@ -91,7 +84,7 @@ test('TC-10: 前端篡改 DTO 不影响内部执行的请求', async () => {
   };
 
   const executor = new SandboxExecutor(mockHandler, runner);
-  await executor.execute(makeReq('echo safe'), 'taskA', 'sessionA');
+  await executor.execute(makeReq('echo safe'), 'taskA', 'sessionA', fixedResolver('sessionA'));
 
   expect(capturedCmd).toBe('echo safe');
   expect(capturedCmd).not.toBe('rm -rf / (tampered)');
@@ -122,7 +115,7 @@ test('TC-11: 主动取消后状态为 cancelled，且不会误判为 timed_out',
   };
 
   const executor = new SandboxExecutor(captureHandler, slowRunner);
-  const p = executor.execute(makeReq('ping -t 127.0.0.1'), 'taskA', 'sessionA');
+  const p = executor.execute(makeReq('ping -t 127.0.0.1'), 'taskA', 'sessionA', fixedResolver('sessionA'));
   await new Promise((r) => setTimeout(r, 20));
 
   expect(executor.cancel(snapId)).toBe(true);
@@ -144,16 +137,13 @@ test('拒绝熔断：同一 taskId 拒绝后重试被拦截，不同 taskId 互�
   const executor = new SandboxExecutor(handler, okRunner());
   const req = makeReq('del /q test.txt');
 
-  // 任务 A 被拒
-  await expect(executor.execute(req, 'taskA', 'sessA')).rejects.toThrow('用户拒绝了此操作。');
+  await expect(executor.execute(req, 'taskA', 'sessA', fixedResolver('sessA'))).rejects.toThrow('用户拒绝了此操作。');
   expect(denyCount).toBe(1);
 
-  // 任务 A 重试：直接拦截，不弹窗
-  await expect(executor.execute(req, 'taskA', 'sessA')).rejects.toThrow(/已被拒绝/);
+  await expect(executor.execute(req, 'taskA', 'sessA', fixedResolver('sessA'))).rejects.toThrow(/已被拒绝/);
   expect(denyCount).toBe(1);
 
-  // 任务 B（不同 taskId）：应该重新弹窗，不受任务 A 影响
-  await expect(executor.execute(req, 'taskB', 'sessB')).rejects.toThrow('用户拒绝了此操作。');
+  await expect(executor.execute(req, 'taskB', 'sessB', fixedResolver('sessB'))).rejects.toThrow('用户拒绝了此操作。');
   expect(denyCount).toBe(2);
 });
 
@@ -169,7 +159,6 @@ test('审计日志：敏感 env 值被 [REDACTED]，原始值不出现', async (
 
   const executor = new SandboxExecutor(okHandler(), okRunner(), logger);
 
-  // 构造一个带敏感 env 的请求
   const req = {
     type: 'shell',
     shellType: 'cmd',
@@ -182,41 +171,128 @@ test('审计日志：敏感 env 值被 [REDACTED]，原始值不出现', async (
     },
   };
 
-  await executor.execute(req, 'taskA', 'sessionA');
+  await executor.execute(req, 'taskA', 'sessionA', fixedResolver('sessionA'));
 
-  // 找到执行日志（非 pre-check 的）
   const execLog = logs.find((l) => l.id !== 'pre-check' && l.request && l.request.env);
   expect(execLog).toBeTruthy();
 
-  // 敏感值必须被脱敏
   expect(execLog.request.env.GITHUB_TOKEN).toBe('[REDACTED]');
   expect(execLog.request.env.API_KEY).toBe('[REDACTED]');
-  // 非敏感值原样保留
   expect(execLog.request.env.NORMAL_VAR).toBe('keep-me');
 
-  // 原始 secret 字符串绝不出现在序列化后的日志里
   const serialized = JSON.stringify(logs);
   expect(serialized).not.toContain('ghp_realsecret123');
   expect(serialized).not.toContain('sk-live-deadbeef');
 });
 
-// ============ 会话切换校验（可选参数） ============
+// ============ 会话校验（Phase 1.2a） ============
 
-test('会话切换校验：activeSessionId 与 sessionId 不一致时拒绝执行', async () => {
+test('会话校验：活动会话与请求会话一致时正常执行', async () => {
   const runner = okRunner();
   const executor = new SandboxExecutor(okHandler(), runner);
+  const r = await executor.execute(makeReq('echo hi'), 'taskA', 'sessionA', fixedResolver('sessionA'));
+  expect(r.exitCode).toBe(0);
+  expect(runner.calls).toBe(1);
+});
+
+test('会话校验：审批前活动会话与请求会话不一致 → 拒绝，不弹窗不执行', async () => {
+  const runner = okRunner();
+  let handlerCalls = 0;
+  const handler = { requestApproval: async () => { handlerCalls++; return 'allow_once'; } };
+  const executor = new SandboxExecutor(handler, runner);
 
   await expect(
-    executor.execute(makeReq('echo hi'), 'taskA', 'session-old', 'session-new')
+    executor.execute(makeReq('echo hi'), 'taskA', 'sessionA', fixedResolver('sessionB'))
   ).rejects.toThrow(/会话与当前活动会话不一致/);
+
+  expect(handlerCalls).toBe(0);
+  expect(runner.calls).toBe(0);
+});
+
+test('会话校验：审批期间切到 B，批准后仍拒绝执行，runner 调用 0 次', async () => {
+  const runner = okRunner();
+  let active = 'sessionA';
+  const resolver = () => active;
+  const handler = {
+    requestApproval: async () => {
+      // 模拟弹窗期间用户切到 sessionB
+      active = 'sessionB';
+      return 'allow_once';
+    }
+  };
+  const executor = new SandboxExecutor(handler, runner);
+
+  await expect(
+    executor.execute(makeReq('echo switch'), 'taskA', 'sessionA', resolver)
+  ).rejects.toThrow(/审批期间会话已切换/);
 
   expect(runner.calls).toBe(0);
 });
 
-test('会话切换校验：未传 activeSessionId 时不做校验（向后兼容）', async () => {
+test('会话校验：resolver 返回 null → 拒绝', async () => {
   const runner = okRunner();
   const executor = new SandboxExecutor(okHandler(), runner);
-  const r = await executor.execute(makeReq('echo hi'), 'taskA', 'sessionA');
+
+  await expect(
+    executor.execute(makeReq('echo hi'), 'taskA', 'sessionA', () => null)
+  ).rejects.toThrow(/无法获取当前活动会话/);
+
+  expect(runner.calls).toBe(0);
+});
+
+test('会话校验：resolver 抛异常 → 拒绝', async () => {
+  const runner = okRunner();
+  const executor = new SandboxExecutor(okHandler(), runner);
+
+  await expect(
+    executor.execute(makeReq('echo hi'), 'taskA', 'sessionA', () => { throw new Error('boom'); })
+  ).rejects.toThrow(/会话解析器异常/);
+
+  expect(runner.calls).toBe(0);
+});
+
+test('会话校验：resolver 不是函数 → 拒绝', async () => {
+  const runner = okRunner();
+  const executor = new SandboxExecutor(okHandler(), runner);
+
+  await expect(
+    executor.execute(makeReq('echo hi'), 'taskA', 'sessionA', undefined)
+  ).rejects.toThrow(/会话解析器未提供/);
+
+  expect(runner.calls).toBe(0);
+});
+
+test('会话校验：sessionId 为空 → 拒绝', async () => {
+  const runner = okRunner();
+  const executor = new SandboxExecutor(okHandler(), runner);
+
+  await expect(
+    executor.execute(makeReq('echo hi'), 'taskA', '', fixedResolver('sessionA'))
+  ).rejects.toThrow(/缺少有效的所属会话 ID/);
+
+  expect(runner.calls).toBe(0);
+});
+
+test('会话校验：切换后重试不再被 runningSignature 锁住', async () => {
+  const runner = okRunner();
+  let active = 'sessionA';
+  const resolver = () => active;
+  const handler = {
+    requestApproval: async () => {
+      active = 'sessionB';
+      return 'allow_once';
+    }
+  };
+  const executor = new SandboxExecutor(handler, runner);
+
+  await expect(
+    executor.execute(makeReq('echo x'), 'taskA', 'sessionA', resolver)
+  ).rejects.toThrow(/审批期间会话已切换/);
+
+  // 切回 A 后，同样的 taskId + 命令必须能重新进入（不是被签名锁永久占住）
+  active = 'sessionA';
+  const handler2 = { requestApproval: async () => 'allow_once' };
+  const executor2 = new SandboxExecutor(handler2, okRunner());
+  const r = await executor2.execute(makeReq('echo x'), 'taskA', 'sessionA', fixedResolver('sessionA'));
   expect(r.exitCode).toBe(0);
-  expect(runner.calls).toBe(1);
 });

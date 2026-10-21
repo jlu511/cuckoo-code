@@ -199,7 +199,21 @@ class JsRunner {
         toolFailures.push({ tool: op || 'unknown', args: args, error: result.error });
       } else {
         try {
-          result = await tool.execute(Object.assign({}, settings || {}, args, { projectDir, currentWindowId: windowId }));
+          const trustedSessionId = (settings && settings.sessionId) || null;
+          const trustedResolver = (settings && settings.sessionResolver) || null;
+          result = await tool.execute(
+            Object.assign(
+              {},
+              settings || {},
+              args,
+              {
+                projectDir,
+                currentWindowId: windowId,
+                activeSessionId: trustedSessionId,
+                sessionResolver: trustedResolver,
+              }
+            )
+          );
           if (result && result.success === false) {
             toolFailures.push({ tool: op, args: args, error: result.error || '未知错误' });
           } else if (op === 'read' && result && result.success !== false) {

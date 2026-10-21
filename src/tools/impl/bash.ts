@@ -103,7 +103,7 @@ class BashTool extends Tool {
   }
 
   async execute(params: any): Promise<ToolResult> {
-    const { command, description, workdir, timeoutMs, projectDir } = params;
+    const { command, description, workdir, timeoutMs, projectDir, activeSessionId, sessionResolver } = params;
 
     try {
       if (!command || typeof command !== 'string') {
@@ -145,9 +145,17 @@ class BashTool extends Tool {
         description: description.trim(),
       };
 
+      // 安全检查：必须同时拿到可信的会话 ID 和实时解析器，否则拒绝
+      if (!activeSessionId || typeof activeSessionId !== 'string' || activeSessionId.trim() === '') {
+        return ToolResult.error('安全策略拒绝：缺少有效的会话 ID，无法执行命令。');
+      }
+      if (typeof sessionResolver !== 'function') {
+        return ToolResult.error('安全策略拒绝：缺少会话解析器，无法校验活动会话。');
+      }
+
       const executor = getSandboxExecutor();
-      // Phase 1 原型阶段 taskId/sessionId 未关联具体会话，先用占位
-      const result = await executor.execute(req, 'task', 'session');
+      // taskId 复用 sessionId：同会话内的熔断生效，跨会话互不影响
+      const result = await executor.execute(req, activeSessionId, activeSessionId, sessionResolver);
 
       // 渲染结果
       let body = result.stdout;

@@ -28,7 +28,19 @@ function registerToolIpc(): void {
     const win = ctx ? ctx.win : null;
     const windowId = win && !win.isDestroyed() ? win.id : null;
     try {
-      const result = await toolRegistry.execute(toolName, { ...params, projectDir: selectedDir, currentWindowId: windowId });
+      const sessionId = store ? store.state.currentSessionId : null;
+      // 实时解析器：每次调用都从 ctx 重新读取，反映审批期间可能发生的会话切换
+      const sessionResolver = () => {
+        const s = ctx ? ctx.sessionStore : null;
+        return s ? s.state.currentSessionId : null;
+      };
+      const result = await toolRegistry.execute(toolName, {
+        ...params,
+        projectDir: selectedDir,
+        currentWindowId: windowId,
+        activeSessionId: sessionId,
+        sessionResolver,
+      });
       return { callId, success: result.success, data: result.data, error: result.error };
     } catch (err: any) {
       return { callId, success: false, error: err.message };
@@ -47,7 +59,11 @@ function registerToolIpc(): void {
     const win = ctx ? ctx.win : null;
     const windowId = win && !win.isDestroyed() ? win.id : null;
     try {
-      const result = await jsRunner.run(code, selectedDir, windowId, { attachDelayMin, attachDelayMax, sessionId, ssrfGuard });
+      const sessionResolver = () => {
+        const s = ctx ? ctx.sessionStore : null;
+        return s ? s.state.currentSessionId : null;
+      };
+      const result = await jsRunner.run(code, selectedDir, windowId, { attachDelayMin, attachDelayMax, sessionId, ssrfGuard, sessionResolver });
       // 复用官方 todoWrite 结果：执行后读取 globalThis.__cuckooTodos（官方规范化的列表），推给 harness
       try {
         const todos = (globalThis as any).__cuckooTodos;

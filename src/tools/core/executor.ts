@@ -71,6 +71,12 @@ export interface AuditLogger {
   log(snapshot: ExecSnapshot, result?: ProcessResult, error?: string): void;
 }
 
+/**
+ * 会话 ID 解析器。每次调用返回"此刻"的活动会话 ID（可为 null）。
+ * 由调用方注入，避免 tools 层依赖 session store。
+ */
+export type SessionIdProvider = () => string | null;
+
 export interface SandboxOptions {
   /** pending 状态最长存活时间（毫秒）。超时后视为 expired，拒绝执行。默认 5 分钟。 */
   pendingTtlMs?: number;
@@ -124,16 +130,22 @@ export class SandboxExecutor {
    * @param req 结构化请求
    * @param taskId 任务 ID（用于熔断与并发去重）
    * @param sessionId 发起请求的会话 ID
-   * @param activeSessionId 可选的当前活动会话 ID；若传入，则要求与 sessionId 一致，否则拒绝
+   * @param getCurrentSessionId 会话解析器（每次调用返回当前活动会话 ID）
    */
   async execute(
     req: ExecRequest,
     taskId: string,
     sessionId: string,
-    activeSessionId?: string
+    getCurrentSessionId: SessionIdProvider
   ): Promise<ProcessResult> {
-    // 0. 会话切换校验（仅在调用方提供了活动会话时执行）
-    if (activeSessionId !== undefined && activeSessionId !== sessionId) {
+    // 0. 请求所属会话必须有效（拒绝伪造/空值）
+    if (!sessionId || typeof sessionId !== 'string' || sessionId.trim() === '') {
+      throw new Error('安全策略拒绝：请求缺少有效的所属会话 ID。');
+    }
+
+    // 1. 审批前校验：请求所属会话必须与当前活动会话一致
+    const activeBefore = this.safeResolveSession(getCurrentSessionId);
+    if (activeBefore !== sessionId) {
       throw new Error('安全策略拒绝：请求所属会话与当前活动会话不一致。');
     }
 
@@ -193,6 +205,22 @@ export class SandboxExecutor {
         throw new Error('安全策略拒绝：审批结果返回时请求已过期（' + ageMs + 'ms）。');
       }
 
+      // 审批后二次校验：重新实时读取当前活动会话
+      let activeAfter: string;
+      try {
+        activeAfter = this.safeResolveSession(getCurrentSessionId);
+      } catch (e: any) {
+        snap.status = 'expired';
+        this.auditLogger?.log(sanitizeSnapshot(snap), undefined, e?.message || String(e));
+        throw e;
+      }
+      if (activeAfter !== sessionId) {
+        snap.status = 'expired';
+        const msg = '安全策略拒绝：审批期间会话已切换，请求作废。';
+        this.auditLogger?.log(sanitizeSnapshot(snap), undefined, msg);
+        throw new Error(msg);
+      }
+
       if (decision === 'deny') {
         snap.status = 'denied';
         this.recordDenial(denialKey);
@@ -238,6 +266,25 @@ export class SandboxExecutor {
       return true;
     }
     return false;
+  }
+
+  /**
+   * 安全解析当前活动会话。任何异常/空值/非法类型都显式拒绝，不静默跳过。
+   */
+  private safeResolveSession(provider: SessionIdProvider): string {
+    if (typeof provider !== 'function') {
+      throw new Error('安全策略拒绝：会话解析器未提供。');
+    }
+    let v: string | null;
+    try {
+      v = provider();
+    } catch (e: any) {
+      throw new Error('安全策略拒绝：会话解析器异常。' + (e?.message || String(e)));
+    }
+    if (!v || typeof v !== 'string' || v.trim() === '') {
+      throw new Error('安全策略拒绝：无法获取当前活动会话 ID。');
+    }
+    return v;
   }
 
   private assessRisk(req: ExecRequest): { level: 'L0'|'L1'|'L2'|'L3', reasons: string[] } {
