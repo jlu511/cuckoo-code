@@ -14,6 +14,42 @@ const SENSITIVE_ENV_RE = /TOKEN|API_KEY|PASSWORD|SECRET|AUTH|CREDENTIAL/i;
 const IMPACTFUL_ENV = new Set(['PATH', 'PATHEXT', 'NODE_OPTIONS', 'PYTHONPATH', 'COMSPEC', 'SYSTEMROOT', 'WINDIR']);
 
 /**
+ * 从请求中提取"实际要执行的命令"：
+ * - ShellRequest：直接用 rawCommand
+ * - ProcessRequest：executable + args 拼接；若是 powershell/cmd 包装，剥出 -Command / /c 之后的部分
+ */
+function extractEffectiveCommand(req: { type: string; rawCommand?: string; executable?: string; args?: string[] }): string {
+  let cmd: string;
+  if (req.type === 'shell') {
+    cmd = req.rawCommand || '';
+  } else {
+    cmd = [req.executable || '', ...(req.args || [])].join(' ').trim();
+  }
+  // 剥离 powershell / pwsh / cmd 外壳
+  const ps = cmd.match(/^(?:powershell|pwsh)(?:\.exe)?\s+.*?-Command\s+(.+)$/i);
+  if (ps) return ps[1].trim();
+  const cm = cmd.match(/^cmd(?:\.exe)?\s+\/[cC]\s+(.+)$/i);
+  if (cm) return cm[1].trim();
+  return cmd;
+}
+
+/**
+ * 判断命令是否属于"高危"（仅用于审批弹窗的颜色与标题，不是安全边界）。
+ * 覆盖 bash/cmd 与 PowerShell 两套危险关键词。
+ */
+function isHighRiskCommand(cmdStr: string): boolean {
+  const effective = extractEffectiveCommand({ type: 'shell', rawCommand: cmdStr });
+  const target = cmdStr + ' ' + effective;
+  // 破坏性动词（含 PowerShell）
+  const destructive = /(?:\brm\s+-[a-z]*[rf]|\bdel\s+\/[a-z]*[fsq]|\brd\s+\/[a-z]*s|\brmdir\s+\/[a-z]*s|\bformat\s+[a-z]:|\bmkfs\b|\bdd\s+if=|\bRemove-Item\b|\bClear-Disk\b|\bFormat-Volume\b|\bStop-Computer\b|\bRestart-Computer\b|\bdiskpart\b|\breg\s+delete\b|\bbcdedit\b|\bvssadmin\s+delete\b)/i;
+  // git 破坏性操作
+  const gitDanger = /\bgit\s+(?:clean|reset\s+--hard)\b/i;
+  // 写入盘符根目录
+  const rootRedirect = />\s*[A-Z]:\\?(?:\s|"|'|$|\*)/i;
+  return destructive.test(target) || gitDanger.test(target) || rootRedirect.test(target);
+}
+
+/**
  * 将请求 env 格式化为可读的多行文本。
  * - 显式展示变量名和"将要覆盖"（因为 Shell/Process 请求的 env 会 merge 到 process.env）。
  * - 敏感键值以 [REDACTED] 替代。
@@ -32,11 +68,13 @@ function formatEnvSection(env: Record<string, string> | undefined): string {
   return lines.join('\n');
 }
 
+export { extractEffectiveCommand, isHighRiskCommand };
+
 export class DefaultApprovalHandler implements ApprovalHandler {
   async requestApproval(dto: ApprovalDTO): Promise<ApprovalDecision> {
     const req = dto.request;
     const cmdStr = req.type === 'shell' ? req.rawCommand : req.executable + ' ' + req.args.join(' ');
-    const isHighRisk = /(?:rm|del|rd|format|mkfs|git\s+clean|git\s+reset)/i.test(cmdStr);
+    const isHighRisk = isHighRiskCommand(cmdStr);
 
     const envSection = formatEnvSection(req.env);
     const detail =
