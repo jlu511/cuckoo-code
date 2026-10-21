@@ -51,6 +51,13 @@ beforeEach(async () => {
   vi.resetModules();
   vi.useFakeTimers();
   client = await import('../../src/mcp/client.js');
+  // 本测试聚焦"连接池 + 引用计数"，与启动审批无关；
+  // 注入一个总是允许的 gate，避免 fail-closed 干扰连接逻辑验证。
+  // peek 返回 allow_session 表示"该窗口已授权"，符合真实 gate 的缓存语义。
+  client.injectMcpLaunchGate({
+    check: async () => 'allow_session',
+    peek: () => 'allow_session',
+  });
 });
 afterEach(() => {
   vi.clearAllTimers();
@@ -137,4 +144,69 @@ test('disconnectAll：强制断开所有连接', async () => {
   await client.disconnectAll();
   assert.strictEqual(isConnected(PROJ1, 'p'), false);
   assert.strictEqual(isConnected(PROJ1, 'u'), false);
+});
+
+// ==================== 跨窗口授权隔离 ====================
+
+test('跨窗口隔离：窗口 A 授权后，窗口 B 首次连接必须走自己的审批', async () => {
+  let checkCalls = 0;
+  const approved = new Set();
+  client.injectMcpLaunchGate({
+    check: async (snap) => {
+      checkCalls++;
+      approved.add(snap.windowId);
+      return 'allow_session';
+    },
+    peek: (snap) => (approved.has(snap.windowId) ? 'allow_session' : null),
+  });
+
+  await client.connectServerByName('p', PROJ1, 1);
+  assert.strictEqual(checkCalls, 1, '窗口 A 应触发审批');
+  assert.strictEqual(isConnected(PROJ1, 'p'), true);
+
+  // 窗口 B 复用已有 transport，但必须有独立授权
+  await client.connectServerByName('p', PROJ1, 2);
+  assert.strictEqual(checkCalls, 2, '窗口 B 必须走自己的审批');
+});
+
+test('跨窗口隔离：窗口 B 被拒绝时不增加引用', async () => {
+  const approved = new Set([1]);
+  client.injectMcpLaunchGate({
+    check: async (snap) => {
+      if (snap.windowId === 1) { approved.add(1); return 'allow_session'; }
+      return 'deny';
+    },
+    peek: (snap) => (approved.has(snap.windowId) ? 'allow_session' : null),
+  });
+
+  await client.connectServerByName('p', PROJ1, 1);
+  await assert.rejects(
+    () => client.connectServerByName('p', PROJ1, 2),
+    /用户拒绝复用 MCP 连接/
+  );
+});
+
+test('相同配置 + 已授权 → 复用不重复审批', async () => {
+  let checkCalls = 0;
+  client.injectMcpLaunchGate({
+    check: async () => { checkCalls++; return 'allow_session'; },
+    peek: () => 'allow_session',
+  });
+
+  await client.connectServerByName('p', PROJ1, 1);
+  await client.connectServerByName('p', PROJ1, 1);
+  assert.strictEqual(checkCalls, 1, '已授权且配置未变，不应重复弹窗');
+});
+
+test('gate 缺少 peek 能力 → 拒绝复用（fail closed）', async () => {
+  client.injectMcpLaunchGate({
+    check: async () => 'allow_session',
+    // 故意不提供 peek
+  });
+
+  await client.connectServerByName('p', PROJ1, 1);
+  await assert.rejects(
+    () => client.connectServerByName('p', PROJ1, 2),
+    /缺少 peek 能力/
+  );
 });

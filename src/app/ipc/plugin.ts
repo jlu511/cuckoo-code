@@ -239,18 +239,10 @@ function registerPluginIpc(): void {
       if (!ok) return { success: false, error: '插件 id 非法' };
       // 让 provider 加载器重新读取
       invalidateCustomProvidersCache();
-      // 启用后立即尝试连接该插件带来的 MCP server ——
-      // 否则要重新初始化项目才会连上（connectEnabledServers 原本只在初始化时调）
-      if (enabled) {
-        try {
-          const ctx = windowState.getContextByWebContents(event.sender);
-          const store = ctx ? ctx.sessionStore : null;
-          const projectDir = store ? store.state.selectedProjectDir : null;
-          if (projectDir) {
-            mcpClient.connectEnabledServers(projectDir).catch(() => { /* 连接失败不影响开关结果 */ });
-          }
-        } catch { /* 无窗口上下文时跳过 */ }
-      }
+      // 启用后不再主动连接 MCP server：
+      // MCP 启动审批需要可信 windowId，而此入口是插件开关操作，缺少调用上下文。
+      // MCP 连接改为惰性触发（mcpCall / mcpListServers 时按需连接，届时会走审批）。
+      // 插件启用的 MCP 配置会被下一次工具调用自动拾取。
       // 广播：插件启用状态变了，通知所有窗口热重载 DSH/UI 插件
       try {
         for (const ctx of windowState.getAllContexts()) {

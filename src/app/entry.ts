@@ -57,6 +57,12 @@ import { buildChromeUserAgent, buildClientHintsHeaders } from '../infra/user-age
 import { initFeishu } from './ipc/feishu.js';
 import { injectSubagentDeps, runAgent as runAgentImpl } from './subagent.js';
 import { injectAgentRunner, injectSubagentChecker } from '../tools/impl/run-agent.js';
+import { injectMcpLaunchGate } from '../mcp/client.js';
+import { DefaultMcpLaunchGate } from '../mcp/launch-gate.js';
+import { showDefaultMcpLaunchDialog } from '../mcp/default-launch-gate.js';
+
+/** MCP 启动审批网关实例（应用退出时清空授权缓存） */
+let mcpLaunchGateInstance: DefaultMcpLaunchGate | null = null;
 import { injectGoalDonePusher } from '../tools/impl/goal-done.js';
 import { isSubagentWindow, pushGoalDone } from './goal.js';
 import { injectSessionTitleSetter } from '../tools/impl/name-conversation.js';
@@ -607,6 +613,7 @@ function createWindow(profile: any) {
     windowState.removeWindow(mainWindow.id);
     // 释放该窗口持有的 MCP 连接引用 + 清理自动连记录
     try { mcpClient.forgetWindow(mainWindow.id); } catch (_) {}
+    try { mcpLaunchGateInstance?.forgetWindow(mainWindow.id); } catch (_) {}
     // 【修复渲染进程泄漏】本窗为「壳 BrowserWindow + AI 页 WebContentsView(+懒加载 harnessView)」双层结构。
     //   win.close() 只销毁壳窗口的 webContents；挂在 contentView 上的子 view 独立持有渲染进程，
     //   不会被连带销毁 → 每关一个窗口留下一个孤儿渲染进程（实测 120 任务 = 120 孤儿 + 275MB）。
@@ -1243,8 +1250,13 @@ ipcMainForProfile.handle('remove-mcp-server', async (event: any, { name }: any) 
 ipcMainForProfile.handle('enable-mcp-server', async (event: any, { name }: any) => {
   try {
     const projectDir = getProjectDirOfEvent(event);
+    const ctx = windowState.getContextByWebContents(event.sender);
+    const windowId = ctx && ctx.win && !ctx.win.isDestroyed() ? ctx.win.id : null;
+    if (windowId === null) {
+      return { success: false, error: '拒绝启动 MCP：无法确定来源窗口' };
+    }
     mcpConfig.setServerEnabled(name, true, projectDir);
-    await mcpClient.connectServerByName(name, projectDir, null);
+    await mcpClient.connectServerByName(name, projectDir, windowId);
     return { success: true };
   } catch (err: any) {
     console.error('[MCP] enable 失败:', err);
@@ -1293,6 +1305,10 @@ if (!gotSingleInstanceLock) {
     setupAppMenu();
     // MCP 配置首次迁移（旧 userData/mcp.json → ~/.cuckoo/mcp.json，旧文件保留）
     try { mcpConfig.migrateLegacy(); } catch (_) { /* ignore */ }
+
+    // 注入 MCP 启动审批网关（应用层审批；不是 OS 级沙箱）
+    mcpLaunchGateInstance = new DefaultMcpLaunchGate(showDefaultMcpLaunchDialog, 120_000);
+    injectMcpLaunchGate(mcpLaunchGateInstance);
     // 加载已启用的 Cuckoo 插件（DSH 兼容；注册其工具到全局工具表）
     import('../plugins/cuckoo-plugins/index.js').then((m: any) => {
       import('../tools/index.js').then((t: any) => {
@@ -1339,6 +1355,7 @@ app.on('before-quit', (event: any) => {
   if (quitFlushed) return;
   event.preventDefault();
   quitFlushed = true;
+  mcpLaunchGateInstance?.clearAll();
   Promise.all([
     flushAllSessions().catch(() => {}),
     mcpClient.disconnectAll().catch(() => {}),

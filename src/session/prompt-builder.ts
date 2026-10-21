@@ -175,10 +175,8 @@ function buildPrompt(opts: { providerId: string; selectedDir: string; isCompacti
   const toolSections = toolRegistry.getFormattedPromptSections();
   const promptSections = dshSections ? (toolSections + '\n\n' + dshSections) : toolSections;
 
-  // 后台异步连接已启用的 MCP server，不阻塞初始化（按当前项目）
-  mcpClient.connectEnabledServers(selectedDir).catch((err: any) => {
-    console.error('[MCP] 初始化时连接失败:', err.message);
-  });
+  // MCP 连接改为惰性触发：由 mcpCall / mcpListServers 按需连接（需要 windowId 走审批）
+  // 这里不再预连接，避免在无窗口上下文的提示词构建阶段启动 MCP 子进程
 
   const mcpSection = buildMcpSection(selectedDir);
   const platformInfo = buildPlatformInfo();
