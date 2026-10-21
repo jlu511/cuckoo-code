@@ -95,9 +95,15 @@ async function installAndLoad(pkgName: string, registry: any, host?: CuckooHost,
     setCuckooPluginEnabled(id, true);
     return { id, pluginName: r.pluginName, tools: r.tools };
   } catch (err: any) {
-    // 加载失败：抛出友好错误，并提示用户包下载成功但可能不是合法的插件
+    // 加载失败：回滚清理刚刚下载的目录
+    try {
+      if (fs.existsSync(dir)) {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    } catch (_) { /* ignore */ }
+
     const msg = err && err.message ? err.message : String(err);
-    throw new Error('插件下载成功，但加载失败（可能不是合法的 Cuckoo 插件）: ' + msg);
+    throw new Error('插件下载成功，但加载失败（可能不是合法的 Cuckoo 插件）。已自动清理: ' + msg);
   }
 }
 
