@@ -526,7 +526,7 @@
   }
   /* 编辑弹层 */
   .ck-modal-mask {
-    position: fixed; inset: 0; z-index: 9999;
+    position: absolute; inset: 0; z-index: 20;
     background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center;
     padding: 16px;
   }
@@ -1206,6 +1206,114 @@
         </div>
 
         <div class="ck-panel">
+          <!-- MCP 配置弹窗 -->
+          <div class="ck-modal-mask cuckoo-hidden" id="mcp-modal">
+            <div class="ck-modal" style="max-width: 800px; width: 90%; height: 80vh;">
+              <span class="ck-modal-title" style="font-size: 15px;">编辑 MCP 配置（用户级）</span>
+              <div class="ck-field" style="margin-top: 12px; flex: 1; display: flex; flex-direction: column;">
+                <textarea class="ck-textarea" id="mcp-json" spellcheck="false" style="flex: 1; min-height: 100%; font-family: Consolas, Menlo, monospace; font-size: 13px; resize: none; white-space: pre; overflow: auto;"></textarea>
+              </div>
+              <div class="ck-modal-foot" style="margin-top: 12px; justify-content: flex-end;">
+                <button class="ck-btn ck-btn-secondary" id="mcp-modal-cancel" style="padding: 8px 20px;">取消</button>
+                <button class="ck-btn ck-btn-primary" id="mcp-modal-save" style="padding: 8px 20px;">保存</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="ck-modal-mask cuckoo-hidden" id="snip-modal">
+            <div class="ck-modal">
+              <span class="ck-modal-title" id="snip-modal-title">编辑提示词</span>
+              <div class="ck-field">
+                <span class="ck-field-label">名称</span>
+                <input class="ck-input" id="snip-name" placeholder="如：生成项目说明" />
+              </div>
+              <div class="ck-field">
+                <span class="ck-field-label">内容</span>
+                <textarea class="ck-textarea" id="snip-content" placeholder="点击后将填入输入框的文本"></textarea>
+              </div>
+              <div class="ck-auto-head">
+                <span class="ck-field-label">自动发送</span>
+                <label class="ck-switch">
+                  <input type="checkbox" id="snip-autosend" checked />
+                  <span class="ck-switch-track"></span>
+                </label>
+              </div>
+              <div class="ck-modal-foot">
+                <button class="ck-btn ck-btn-secondary" id="snip-cancel">取消</button>
+                <button class="ck-btn ck-btn-primary" id="snip-save">保存</button>
+              </div>
+            </div>
+          </div>
+          <!-- 新建/编辑子代理弹窗 -->
+          <div class="ck-modal-mask cuckoo-hidden" id="agent-modal">
+            <div class="ck-modal">
+              <span class="ck-modal-title" id="agent-modal-title">新建子代理</span>
+              <div class="ck-field">
+                <span class="ck-field-label">名称</span>
+                <input class="ck-input" id="agent-name" placeholder="如：code-reviewer（英文）" />
+              </div>
+              <div class="ck-field" id="agent-scope-field">
+                <span class="ck-field-label">位置</span>
+                <select class="ck-input" id="agent-scope">
+                  <option value="project">项目级（.cuckoo/agents/）</option>
+                  <option value="user">用户级（~/.cuckoo/agents/）</option>
+                </select>
+              </div>
+              <p class="ck-about-tip" id="agent-modal-tip">生成模板后，会用系统默认程序打开，你直接编辑保存即可。</p>
+              <div class="ck-modal-foot">
+                <button class="ck-btn ck-btn-secondary cuckoo-hidden" id="agent-open-file">打开正文</button>
+                <button class="ck-btn ck-btn-secondary" id="agent-cancel">取消</button>
+                <button class="ck-btn ck-btn-primary" id="agent-create">创建并打开</button>
+              </div>
+            </div>
+          </div>
+          <!-- 窗口组管理弹窗 -->
+          <div class="ck-modal-mask cuckoo-hidden" id="wg-modal">
+            <div class="ck-modal">
+              <span class="ck-modal-title">管理窗口组</span>
+              <div class="ck-field">
+                <span class="ck-field-label">组名</span>
+                <input class="ck-input" id="wg-modal-name" placeholder="组名" />
+              </div>
+              <div class="ck-field">
+                <span class="ck-field-label">组内窗口（按顺序轮换）</span>
+                <div class="ck-wg-members" id="wg-modal-members"></div>
+              </div>
+              <div class="ck-field" id="wg-modal-add-wrap">
+                <span class="ck-field-label">添加窗口</span>
+                <select class="ck-input" id="wg-modal-add"></select>
+              </div>
+              <div class="ck-modal-foot">
+                <button class="ck-btn ck-btn-secondary" id="wg-modal-cancel">取消</button>
+                <button class="ck-btn ck-btn-primary" id="wg-modal-save">保存</button>
+              </div>
+            </div>
+          </div>
+          <!-- 通用输入弹窗（重命名会话等） -->
+          <div class="ck-modal-mask cuckoo-hidden" id="input-modal">
+            <div class="ck-modal">
+              <span class="ck-modal-title" id="input-modal-title">重命名</span>
+              <div class="ck-field">
+                <input class="ck-input" id="input-modal-value" placeholder="" />
+              </div>
+              <div class="ck-modal-foot">
+                <button class="ck-btn ck-btn-secondary" id="input-modal-cancel">取消</button>
+                <button class="ck-btn ck-btn-primary" id="input-modal-ok">确定</button>
+              </div>
+            </div>
+          </div>
+          <!-- 通用弹框（替代原生 alert/confirm） -->
+          <div class="ck-modal-mask cuckoo-hidden" id="ck-dialog">
+            <div class="ck-modal ck-dialog">
+              <span class="ck-modal-title" id="ck-dialog-title">提示</span>
+              <div class="ck-dialog-msg" id="ck-dialog-msg"></div>
+              <div class="ck-modal-foot">
+                <button class="ck-btn ck-btn-secondary cuckoo-hidden" id="ck-dialog-cancel">取消</button>
+                <button class="ck-btn ck-btn-primary" id="ck-dialog-ok">确定</button>
+              </div>
+            </div>
+          </div>
+
           <div class="ck-panel-body">
             <!-- ===== 工作区（会话） ===== -->
             <div class="ck-tab ck-tab-active" data-panel="workspaces">
@@ -1748,114 +1856,6 @@
 
   </div>
   <div class="ck-ws-tip" id="ws-tip" style="display:none"></div>
-          <!-- MCP 配置弹窗 -->
-          <div class="ck-modal-mask cuckoo-hidden" id="mcp-modal" style="justify-content: flex-start; padding-left: 80px;">
-            <div class="ck-modal" style="max-width: 800px; width: 70vw; height: 80vh;">
-              <span class="ck-modal-title" style="font-size: 15px;">编辑 MCP 配置（用户级）</span>
-              <div class="ck-field" style="margin-top: 12px; flex: 1; display: flex; flex-direction: column;">
-                <textarea class="ck-textarea" id="mcp-json" spellcheck="false" style="flex: 1; min-height: 100%; font-family: Consolas, Menlo, monospace; font-size: 13px; resize: none; white-space: pre; overflow: auto;"></textarea>
-              </div>
-              <div class="ck-modal-foot" style="margin-top: 12px; justify-content: flex-end;">
-                <button class="ck-btn ck-btn-secondary" id="mcp-modal-cancel" style="padding: 8px 20px;">取消</button>
-                <button class="ck-btn ck-btn-primary" id="mcp-modal-save" style="padding: 8px 20px;">保存</button>
-              </div>
-            </div>
-          </div>
-
-          <div class="ck-modal-mask cuckoo-hidden" id="snip-modal">
-            <div class="ck-modal">
-              <span class="ck-modal-title" id="snip-modal-title">编辑提示词</span>
-              <div class="ck-field">
-                <span class="ck-field-label">名称</span>
-                <input class="ck-input" id="snip-name" placeholder="如：生成项目说明" />
-              </div>
-              <div class="ck-field">
-                <span class="ck-field-label">内容</span>
-                <textarea class="ck-textarea" id="snip-content" placeholder="点击后将填入输入框的文本"></textarea>
-              </div>
-              <div class="ck-auto-head">
-                <span class="ck-field-label">自动发送</span>
-                <label class="ck-switch">
-                  <input type="checkbox" id="snip-autosend" checked />
-                  <span class="ck-switch-track"></span>
-                </label>
-              </div>
-              <div class="ck-modal-foot">
-                <button class="ck-btn ck-btn-secondary" id="snip-cancel">取消</button>
-                <button class="ck-btn ck-btn-primary" id="snip-save">保存</button>
-              </div>
-            </div>
-          </div>
-          <!-- 新建/编辑子代理弹窗 -->
-          <div class="ck-modal-mask cuckoo-hidden" id="agent-modal">
-            <div class="ck-modal">
-              <span class="ck-modal-title" id="agent-modal-title">新建子代理</span>
-              <div class="ck-field">
-                <span class="ck-field-label">名称</span>
-                <input class="ck-input" id="agent-name" placeholder="如：code-reviewer（英文）" />
-              </div>
-              <div class="ck-field" id="agent-scope-field">
-                <span class="ck-field-label">位置</span>
-                <select class="ck-input" id="agent-scope">
-                  <option value="project">项目级（.cuckoo/agents/）</option>
-                  <option value="user">用户级（~/.cuckoo/agents/）</option>
-                </select>
-              </div>
-              <p class="ck-about-tip" id="agent-modal-tip">生成模板后，会用系统默认程序打开，你直接编辑保存即可。</p>
-              <div class="ck-modal-foot">
-                <button class="ck-btn ck-btn-secondary cuckoo-hidden" id="agent-open-file">打开正文</button>
-                <button class="ck-btn ck-btn-secondary" id="agent-cancel">取消</button>
-                <button class="ck-btn ck-btn-primary" id="agent-create">创建并打开</button>
-              </div>
-            </div>
-          </div>
-          <!-- 窗口组管理弹窗 -->
-          <div class="ck-modal-mask cuckoo-hidden" id="wg-modal">
-            <div class="ck-modal">
-              <span class="ck-modal-title">管理窗口组</span>
-              <div class="ck-field">
-                <span class="ck-field-label">组名</span>
-                <input class="ck-input" id="wg-modal-name" placeholder="组名" />
-              </div>
-              <div class="ck-field">
-                <span class="ck-field-label">组内窗口（按顺序轮换）</span>
-                <div class="ck-wg-members" id="wg-modal-members"></div>
-              </div>
-              <div class="ck-field" id="wg-modal-add-wrap">
-                <span class="ck-field-label">添加窗口</span>
-                <select class="ck-input" id="wg-modal-add"></select>
-              </div>
-              <div class="ck-modal-foot">
-                <button class="ck-btn ck-btn-secondary" id="wg-modal-cancel">取消</button>
-                <button class="ck-btn ck-btn-primary" id="wg-modal-save">保存</button>
-              </div>
-            </div>
-          </div>
-          <!-- 通用输入弹窗（重命名会话等） -->
-          <div class="ck-modal-mask cuckoo-hidden" id="input-modal">
-            <div class="ck-modal">
-              <span class="ck-modal-title" id="input-modal-title">重命名</span>
-              <div class="ck-field">
-                <input class="ck-input" id="input-modal-value" placeholder="" />
-              </div>
-              <div class="ck-modal-foot">
-                <button class="ck-btn ck-btn-secondary" id="input-modal-cancel">取消</button>
-                <button class="ck-btn ck-btn-primary" id="input-modal-ok">确定</button>
-              </div>
-            </div>
-          </div>
-          <!-- 通用弹框（替代原生 alert/confirm） -->
-          <div class="ck-modal-mask cuckoo-hidden" id="ck-dialog">
-            <div class="ck-modal ck-dialog">
-              <span class="ck-modal-title" id="ck-dialog-title">提示</span>
-              <div class="ck-dialog-msg" id="ck-dialog-msg"></div>
-              <div class="ck-modal-foot">
-                <button class="ck-btn ck-btn-secondary cuckoo-hidden" id="ck-dialog-cancel">取消</button>
-                <button class="ck-btn ck-btn-primary" id="ck-dialog-ok">确定</button>
-              </div>
-            </div>
-          </div>
-
 <script>
 "use strict";
 (() => {
@@ -2380,11 +2380,13 @@
   }
   function expandForModal() {
     if (sidebar && !sidebar.classList.contains("ck-collapsed")) {
+      sidebar.style.width = "900px";
       if (api.toggleSidebar) api.toggleSidebar(900);
     }
   }
   function restoreAfterModal() {
     if (sidebar && !sidebar.classList.contains("ck-collapsed")) {
+      sidebar.style.width = expandedWidth + "px";
       if (api.toggleSidebar) api.toggleSidebar(expandedWidth);
     }
   }

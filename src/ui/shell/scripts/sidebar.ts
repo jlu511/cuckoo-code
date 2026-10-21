@@ -48,6 +48,7 @@ function applySidebarWidth(w: number): void {
 /** 临时扩宽左侧壳页面，为弹窗腾出空间 */
 export function expandForModal(): void {
   if (sidebar && !sidebar.classList.contains('ck-collapsed')) {
+    sidebar.style.width = '900px';
     if (api.toggleSidebar) api.toggleSidebar(900);
   }
 }
@@ -55,6 +56,7 @@ export function expandForModal(): void {
 /** 弹窗关闭后，恢复原来的展开宽度 */
 export function restoreAfterModal(): void {
   if (sidebar && !sidebar.classList.contains('ck-collapsed')) {
+    sidebar.style.width = expandedWidth + 'px';
     if (api.toggleSidebar) api.toggleSidebar(expandedWidth);
   }
 }
