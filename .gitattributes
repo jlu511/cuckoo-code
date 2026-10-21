@@ -1,0 +1,5 @@
+# 强制 Git 将所有 TypeScript 文件视为文本，避免误判为二进制
+*.ts text eol=lf
+
+# 针对这个特定文件，强制进行文本 diff
+src/mcp/launch-gate.ts text diff

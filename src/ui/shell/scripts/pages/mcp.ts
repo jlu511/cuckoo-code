@@ -145,10 +145,15 @@ export async function loadMcpServers(): Promise<void> {
     }
     const cardHtml = (s: any) => {
       const dotCls = s.connected ? 'ck-mcp-dot on' : 'ck-mcp-dot';
+      const isEnabled = s.enabled !== false;
       return '<div class="ck-mcp-item" data-name="' + escapeHtml(s.name) + '">' +
         '<div class="ck-mcp-top">' +
           '<span class="' + dotCls + '"></span>' +
           '<span class="ck-mcp-name">' + escapeHtml(s.name) + '</span>' +
+          '<label class="ck-switch" style="margin-left:auto; flex-shrink:0;" onclick="event.stopPropagation()">' +
+            '<input type="checkbox" class="mcp-toggle" ' + (isEnabled ? 'checked' : '') + ' />' +
+            '<span class="ck-switch-track"></span>' +
+          '</label>' +
         '</div>' +
         '<div class="ck-mcp-bottom">' +
           '<span class="ck-mcp-tag">' + escapeHtml(s.type || 'stdio') + '</span>' +
@@ -163,11 +168,32 @@ export async function loadMcpServers(): Promise<void> {
     if (projServers.length) html += '<div class="ck-mcp-group-title">项目级</div>' + projServers.map(cardHtml).join('');
     listEl.innerHTML = html;
     listEl.querySelectorAll('.ck-mcp-item').forEach((el: any) => {
+      const name = el.dataset.name;
+      const toggle = el.querySelector('.mcp-toggle') as HTMLInputElement;
+
+      if (toggle) {
+        toggle.addEventListener('change', async (e: Event) => {
+          e.stopPropagation();
+          const isChecked = toggle.checked;
+          try {
+            if (isChecked) {
+              if (api.enableMcpServer) await api.enableMcpServer(name);
+            } else {
+              if (api.disableMcpServer) await api.disableMcpServer(name);
+            }
+            await loadMcpServers(); // 刷新状态
+          } catch (err: any) {
+            toggle.checked = !isChecked; // 回滚
+            await ckAlert('切换状态失败: ' + (err.message || err));
+          }
+        });
+      }
+
       el.addEventListener('click', async () => {
         if (api.appendSnippet) {
-          try { await api.appendSnippet('请使用 ' + el.dataset.name + ' 这个 MCP'); } catch (_) { /* ignore */ }
+          try { await api.appendSnippet('请使用 ' + name + ' 这个 MCP'); } catch (_) { /* ignore */ }
         }
-        addRecent('mcp', el.dataset.name);
+        addRecent('mcp', name);
       });
     });
   } catch (_) {

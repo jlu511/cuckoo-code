@@ -458,6 +458,20 @@ export async function loadCuckooPlugins(): Promise<void> {
       const del = el.querySelector('.ckp-del') as any;
       if (toggle) {
         toggle.addEventListener('change', async () => {
+          // 启用前必须确认：插件代码来自第三方，会以当前用户权限执行
+          if (toggle.checked) {
+            const ok = await ckConfirm(
+              '⚠️ 启用第三方插件\n\n' +
+              '插件代码来自 npm 上的第三方包，启用后将在本机执行。\n\n' +
+              '· 当前实现不是 OS 级沙箱，插件代码以当前用户身份运行\n' +
+              '· 插件可读写文件、访问网络、启动进程\n' +
+              '· 插件的 ctx.fs、UI 注入和工具注册能力均无隔离\n' +
+              '· 主动启用不代表插件代码已被安全验证\n\n' +
+              '只启用你信任来源的插件。确定启用「' + id + '」？',
+              '启用第三方插件'
+            );
+            if (!ok) { toggle.checked = false; return; }
+          }
           const r2 = await apiAny.cuckooPluginToggle(id, !!toggle.checked);
           if (!r2 || !r2.success) { await ckAlert((r2 && r2.error) || '操作失败'); toggle.checked = !toggle.checked; }
         });

@@ -273,6 +273,7 @@ function buildLaunchSnapshot(server: any, windowId: number): McpLaunchSnapshot {
   return {
     id: crypto.randomUUID(),
     ...base,
+    userEnv: server.env || {},
     fingerprint: buildFingerprint(base),
     createdAt: Date.now(),
   };

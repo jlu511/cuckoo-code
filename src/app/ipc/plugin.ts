@@ -467,10 +467,15 @@ function registerPluginIpc(): void {
   });
 
   // 安装（npm 下载 + 加载 + 注册工具）
-  ipcMain.handle('cuckoo-plugin-install', async (_event: any, { pkgName }: any = {}) => {
+  ipcMain.handle('cuckoo-plugin-install', async (event: any, { pkgName }: any = {}) => {
     try {
       if (!pkgName || typeof pkgName !== 'string') return { success: false, error: '缺少包名' };
-      const r = await installAndLoad(pkgName, toolRegistry);
+      const ctx = windowState.getContextByWebContents(event.sender);
+      const windowId = ctx && ctx.win && !ctx.win.isDestroyed() ? ctx.win.id : null;
+      if (windowId === null) {
+        return { success: false, error: '拒绝安装插件：无法确定来源窗口' };
+      }
+      const r = await installAndLoad(pkgName, toolRegistry, undefined, windowId);
       return { success: true, id: r.id, pluginName: r.pluginName, tools: r.tools };
     } catch (err: any) {
       return { success: false, error: err && err.message ? err.message : String(err) };

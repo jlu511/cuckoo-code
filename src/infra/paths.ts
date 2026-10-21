@@ -15,10 +15,20 @@ import { createRequire } from 'node:module';
 
 // electron 特殊：其 index.js 导出字符串，须用 createRequire（见 P3a 手册 1.5）
 const require = createRequire(import.meta.url);
-const { app } = require('electron');
 
-/** 应用根目录：开发=项目根，打包=asar 根 */
-export const APP_ROOT: string = app.getAppPath();
+let electronApp: any = null;
+try {
+  const electron = require('electron');
+  // 兼容 contextIsolation 和主进程的不同导出形态
+  electronApp = (electron && electron.app) || (typeof electron === 'object' ? electron : null);
+} catch (_) {
+  // 在纯 Node / 测试环境中忽略
+}
+
+/** 应用根目录：开发=项目根，打包=asar 根，测试环境=process.cwd() */
+export const APP_ROOT: string = (electronApp && typeof electronApp.getAppPath === 'function')
+  ? electronApp.getAppPath()
+  : process.cwd();
 
 /** 解析项目根资源（如 assets/icon.png） */
 export function resolveAsset(rel: string): string {

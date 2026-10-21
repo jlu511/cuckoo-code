@@ -5,15 +5,18 @@ const require = createRequire(import.meta.url);
 
 const SENSITIVE_RE = /TOKEN|API_KEY|PASSWORD|SECRET|AUTH|CREDENTIAL/i;
 
-function formatEnv(env: Record<string, string>): string {
-  const keys = Object.keys(env).sort();
-  if (keys.length === 0) return '(继承自应用环境)';
-  const lines: string[] = [];
+function formatEnv(userEnv?: Record<string, string>): string {
+  const keys = userEnv ? Object.keys(userEnv).sort() : [];
+  if (keys.length === 0) {
+    return '  (未显式配置，将完全继承 Cuckoo 的环境变量)';
+  }
+  const lines: string[] = ['  【在 mcp.json 中显式配置的变量】'];
   for (const k of keys) {
     const isSensitive = SENSITIVE_RE.test(k);
-    const v = isSensitive ? '[REDACTED]' : env[k];
+    const v = isSensitive ? '[REDACTED]' : userEnv![k];
     lines.push('  ' + k + ' = ' + v);
   }
+  lines.push('\n  (还会继承 Cuckoo 应用自身的系统环境变量)');
   return lines.join('\n');
 }
 
@@ -38,7 +41,7 @@ export async function showDefaultMcpLaunchDialog(snapshot: McpLaunchSnapshot): P
     snapshot.cwd,
     '',
     '【环境变量】',
-    formatEnv(snapshot.env),
+    formatEnv(snapshot.userEnv),
     '',
     '⚠️ 重要提示：',
     '允许启动意味着该本地程序将以当前用户身份运行，拥有与 Cuckoo 相同的文件、网络、注册表访问权限。',

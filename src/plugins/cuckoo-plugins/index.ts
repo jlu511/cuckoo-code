@@ -7,6 +7,7 @@
  */
 import { Tool } from '../../tools/core/Tool.js';
 import { installCuckooPlugin } from './installer.js';
+import fs from 'node:fs';
 import { loadCuckooPlugin } from './loader.js';
 import type { CuckooHost } from './loader.js';
 import { listCuckooPluginDirs, getCuckooPluginDir, isValidPluginId } from './paths.js';
@@ -84,11 +85,20 @@ async function loadPluginFromDir(dir: string, registry: any, host?: CuckooHost):
 }
 
 /** 安装（npm 下载）+ 加载 + 注册 */
-async function installAndLoad(pkgName: string, registry: any, host?: CuckooHost): Promise<{ id: string; pluginName: string; tools: string[] }> {
-  const { id, dir } = await installCuckooPlugin(pkgName);
-  const r = await loadPluginFromDir(dir, registry, host);
-  setCuckooPluginEnabled(id, true);
-  return { id, pluginName: r.pluginName, tools: r.tools };
+async function installAndLoad(pkgName: string, registry: any, host?: CuckooHost, windowId?: number): Promise<{ id: string; pluginName: string; tools: string[] }> {
+  if (typeof windowId !== 'number') {
+    throw new Error('拒绝安装插件：缺少可信的窗口 ID');
+  }
+  const { id, dir } = await installCuckooPlugin(pkgName, windowId);
+  try {
+    const r = await loadPluginFromDir(dir, registry, host);
+    setCuckooPluginEnabled(id, true);
+    return { id, pluginName: r.pluginName, tools: r.tools };
+  } catch (err: any) {
+    // 加载失败：抛出友好错误，并提示用户包下载成功但可能不是合法的插件
+    const msg = err && err.message ? err.message : String(err);
+    throw new Error('插件下载成功，但加载失败（可能不是合法的 Cuckoo 插件）: ' + msg);
+  }
 }
 
 /** 启动时加载所有"已启用"的插件 */
@@ -108,10 +118,22 @@ async function loadEnabledPlugins(registry: any, host?: CuckooHost): Promise<{ l
   return { loaded, failed };
 }
 
-/** 卸载插件（清状态；工具暂不动态移除，重启生效） */
+/** 卸载插件（删除目录 + 清状态；工具暂不动态移除，重启生效） */
 function uninstallCuckooPlugin(id: string): boolean {
+  if (!isValidPluginId(id)) return false;
   clearCuckooPluginState(id);
+  const dir = getCuckooPluginDir(id);
+  if (fs.existsSync(dir)) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch (err: any) {
+      console.error('[Plugin] 删除插件目录失败:', err.message);
+      return false;
+    }
+  }
   return true;
 }
 
 export { installAndLoad, loadEnabledPlugins, loadPluginFromDir, uninstallCuckooPlugin, loadedPluginTools, DshPluginTool };
+export { injectPluginInstallGate, getPluginInstallGate } from './installer.js';
+export { DefaultPluginInstallGate } from './default-install-gate.js';

@@ -3773,7 +3773,8 @@
       }
       const cardHtml = (s) => {
         const dotCls = s.connected ? "ck-mcp-dot on" : "ck-mcp-dot";
-        return '<div class="ck-mcp-item" data-name="' + escapeHtml(s.name) + '"><div class="ck-mcp-top"><span class="' + dotCls + '"></span><span class="ck-mcp-name">' + escapeHtml(s.name) + '</span></div><div class="ck-mcp-bottom"><span class="ck-mcp-tag">' + escapeHtml(s.type || "stdio") + '</span><span class="ck-mcp-tag">' + (s.toolCount || 0) + " \u5DE5\u5177</span></div></div>";
+        const isEnabled = s.enabled !== false;
+        return '<div class="ck-mcp-item" data-name="' + escapeHtml(s.name) + '"><div class="ck-mcp-top"><span class="' + dotCls + '"></span><span class="ck-mcp-name">' + escapeHtml(s.name) + '</span><label class="ck-switch" style="margin-left:auto; flex-shrink:0;" onclick="event.stopPropagation()"><input type="checkbox" class="mcp-toggle" ' + (isEnabled ? "checked" : "") + ' /><span class="ck-switch-track"></span></label></div><div class="ck-mcp-bottom"><span class="ck-mcp-tag">' + escapeHtml(s.type || "stdio") + '</span><span class="ck-mcp-tag">' + (s.toolCount || 0) + " \u5DE5\u5177</span></div></div>";
       };
       const userServers = servers.filter((s) => s.source !== "project");
       const projServers = servers.filter((s) => s.source === "project");
@@ -3782,14 +3783,33 @@
       if (projServers.length) html += '<div class="ck-mcp-group-title">\u9879\u76EE\u7EA7</div>' + projServers.map(cardHtml).join("");
       listEl2.innerHTML = html;
       listEl2.querySelectorAll(".ck-mcp-item").forEach((el) => {
+        const name = el.dataset.name;
+        const toggle = el.querySelector(".mcp-toggle");
+        if (toggle) {
+          toggle.addEventListener("change", async (e) => {
+            e.stopPropagation();
+            const isChecked = toggle.checked;
+            try {
+              if (isChecked) {
+                if (api.enableMcpServer) await api.enableMcpServer(name);
+              } else {
+                if (api.disableMcpServer) await api.disableMcpServer(name);
+              }
+              await loadMcpServers();
+            } catch (err) {
+              toggle.checked = !isChecked;
+              await ckAlert("\u5207\u6362\u72B6\u6001\u5931\u8D25: " + (err.message || err));
+            }
+          });
+        }
         el.addEventListener("click", async () => {
           if (api.appendSnippet) {
             try {
-              await api.appendSnippet("\u8BF7\u4F7F\u7528 " + el.dataset.name + " \u8FD9\u4E2A MCP");
+              await api.appendSnippet("\u8BF7\u4F7F\u7528 " + name + " \u8FD9\u4E2A MCP");
             } catch (_) {
             }
           }
-          addRecent("mcp", el.dataset.name);
+          addRecent("mcp", name);
         });
       });
     } catch (_) {
@@ -4954,6 +4974,16 @@
         const del = el.querySelector(".ckp-del");
         if (toggle) {
           toggle.addEventListener("change", async () => {
+            if (toggle.checked) {
+              const ok = await ckConfirm(
+                "\u26A0\uFE0F \u542F\u7528\u7B2C\u4E09\u65B9\u63D2\u4EF6\n\n\u63D2\u4EF6\u4EE3\u7801\u6765\u81EA npm \u4E0A\u7684\u7B2C\u4E09\u65B9\u5305\uFF0C\u542F\u7528\u540E\u5C06\u5728\u672C\u673A\u6267\u884C\u3002\n\n\xB7 \u5F53\u524D\u5B9E\u73B0\u4E0D\u662F OS \u7EA7\u6C99\u7BB1\uFF0C\u63D2\u4EF6\u4EE3\u7801\u4EE5\u5F53\u524D\u7528\u6237\u8EAB\u4EFD\u8FD0\u884C\n\xB7 \u63D2\u4EF6\u53EF\u8BFB\u5199\u6587\u4EF6\u3001\u8BBF\u95EE\u7F51\u7EDC\u3001\u542F\u52A8\u8FDB\u7A0B\n\xB7 \u63D2\u4EF6\u7684 ctx.fs\u3001UI \u6CE8\u5165\u548C\u5DE5\u5177\u6CE8\u518C\u80FD\u529B\u5747\u65E0\u9694\u79BB\n\xB7 \u4E3B\u52A8\u542F\u7528\u4E0D\u4EE3\u8868\u63D2\u4EF6\u4EE3\u7801\u5DF2\u88AB\u5B89\u5168\u9A8C\u8BC1\n\n\u53EA\u542F\u7528\u4F60\u4FE1\u4EFB\u6765\u6E90\u7684\u63D2\u4EF6\u3002\u786E\u5B9A\u542F\u7528\u300C" + id + "\u300D\uFF1F",
+                "\u542F\u7528\u7B2C\u4E09\u65B9\u63D2\u4EF6"
+              );
+              if (!ok) {
+                toggle.checked = false;
+                return;
+              }
+            }
             const r2 = await apiAny.cuckooPluginToggle(id, !!toggle.checked);
             if (!r2 || !r2.success) {
               await ckAlert(r2 && r2.error || "\u64CD\u4F5C\u5931\u8D25");
