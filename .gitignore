@@ -71,3 +71,4 @@ src/ui/vendor/monaco/
 dist-test/
 update-original.bat
 update/
+fast-pack.js
