@@ -121,7 +121,14 @@ class PwshTool extends Tool {
 
       // ====== 1. 危险等级判定 ======
       // 破坏性命令：只要包含这些词，无论有没有盘符，都是高危
-      const destructivePatterns = [/\b(rm|del|rd|rmdir|format|mkfs|dd|Remove-Item)\b/i];
+      // 破坏性命令：严格匹配参数（防止 git log --format 或 Format-Table 误报）
+      const destructivePatterns = [
+        /\b(rm\s+-[a-z]*[rf]|del\s+\/[a-z]*[fsq]|rd\s+\/[a-z]*s|rmdir\s+\/[a-z]*s)\b/i,
+        /\bformat\s+[a-z]:/i,
+        /\bmkfs\b/i,
+        /\bdd\s+if=/i,
+        /\bRemove-Item\b.*-Recurse/i
+      ];
       // 重定向到盘符根目录
       const rootRedirectPattern = />\s*[A-Z]:\\?(\s|"|'|$|\*)/i;
       
@@ -129,13 +136,26 @@ class PwshTool extends Tool {
       const isRootRedirect = rootRedirectPattern.test(trimmed);
       const isHighRisk = isBaseDangerous || isDestructive || isRootRedirect;
 
-      // 只读白名单：日常查看、切换目录等，绝不弹窗
+      // 剥离 powershell / cmd 外壳
+      let innerCmd = trimmed;
+      const pwshMatch = innerCmd.match(/^(?:powershell|pwsh)(?:\.exe)?\s+.*?-Command\s+["']?(.*?)["']?$/i);
+      if (pwshMatch) innerCmd = pwshMatch[1];
+      const cmdMatch = innerCmd.match(/^cmd(?:\.exe)?\s+\/[cC]\s+["']?(.*?)["']?$/i);
+      if (cmdMatch) innerCmd = cmdMatch[1];
+
+      // 危险特征拦截：只要包含写操作特征，绝不视为只读
+      const writeIndicators = /(?:>|\bOut-File\b|\bSet-Content\b|\bAdd-Content\b|\bNew-Item\b|\bRemove-Item\b|\bmkdir\b|\bmd\b|\brmdir\b|\brd\b|\bcp\b|\bcopy\b|\bmv\b|\bmove\b|\bdel\b|\brm\b)/i;
+      const hasWrite = writeIndicators.test(innerCmd);
+
+      // 只读白名单
       const readonlyPrefixes = [
         /^cd\b/i, /^pwd\b/i, /^dir\b/i, /^ls\b/i, /^type\b/i, /^cat\b/i, /^Get-Content\b/i,
         /^echo\b/i, /^where\b/i, /^which\b/i, /^git status\b/i, /^git log\b/i,
-        /^git diff\b/i, /^git branch\b/i, /^node -v\b/i, /^npm -v\b/i
+        /^git diff\b/i, /^git branch\b/i, /^node -v\b/i, /^npm -v\b/i,
+        /^Get-[a-z]+/i, /^Test-Path\b/i, /^Select-Object\b/i, /^Format-Table\b/i, /^Measure-Object\b/i,
+        /^\$[a-zA-Z_]\w*\s*=/i
       ];
-      const isReadonly = readonlyPrefixes.some(p => p.test(trimmed));
+      const isReadonly = !hasWrite && readonlyPrefixes.some(p => p.test(innerCmd));
 
       let needConfirm = true;
       let warnText = 'AI 请求执行普通 PowerShell 命令，是否允许？';
