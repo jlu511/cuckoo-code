@@ -44,7 +44,7 @@ afterEach(() => {
 test('uninstallCuckooPlugin: 真实删除插件目录 + 清理状态', async () => {
   const indexMod = await import('../../src/plugins/cuckoo-plugins/index.js');
   const stateMod = await import('../../src/plugins/cuckoo-plugins/state.js');
-  
+
   const pluginDir = path.join(TMP, 'cuckoo-plugins', 'demo-plugin');
   expect(fs.existsSync(pluginDir)).toBe(true);
 
@@ -65,3 +65,4 @@ test('uninstallCuckooPlugin: 非法 id 直接拒绝，不抛异常', async () =>
   const ok = uninstallCuckooPlugin('../evil');
   expect(ok).toBe(false);
 });
+
