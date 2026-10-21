@@ -138,7 +138,9 @@ class BashTool extends Tool {
         /\bformat\s+[a-z]:/i,
         /\bmkfs\b/i,
         /\bdd\s+if=/i,
-        /\bRemove-Item\b.*-Recurse/i
+        /\bRemove-Item\b.*-Recurse/i,
+        /\bgit\s+clean\b/i,            // 防止清理未跟踪文件
+        /\bgit\s+reset\s+--hard\b/i    // 防止丢弃本地修改
       ];
       // 重定向到盘符根目录
       const rootRedirectPattern = />\s*[A-Z]:\\?(\s|"|'|$|\*)/i;
@@ -161,10 +163,12 @@ class BashTool extends Tool {
       // 只读白名单
       const readonlyPrefixes = [
         /^cd\b/i, /^pwd\b/i, /^dir\b/i, /^ls\b/i, /^type\b/i, /^cat\b/i,
-        /^echo\b/i, /^where\b/i, /^which\b/i, /^git status\b/i, /^git log\b/i,
-        /^git diff\b/i, /^git branch\b/i, /^node -v\b/i, /^npm -v\b/i,
+        /^echo\b/i, /^where\b/i, /^which\b/i, /^node -v\b/i, /^npm -v\b/i,
         /^Get-[a-z]+/i, /^Test-Path\b/i, /^Select-Object\b/i, /^Format-Table\b/i, /^Measure-Object\b/i,
-        /^\$[a-zA-Z_]\w*\s*=/i
+        /^\$[a-zA-Z_]\w*\s*=/i,
+        // 常规开发命令，不破坏磁盘
+        /^npm\s+/i, /^npx\s+/i, /^yarn\b/i, /^pnpm\b/i,
+        /^git\s+/i
       ];
       const isReadonly = !hasWrite && readonlyPrefixes.some(p => p.test(innerCmd));
 
