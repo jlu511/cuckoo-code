@@ -296,3 +296,169 @@ test('会话校验：切换后重试不再被 runningSignature 锁住', async ()
   const r = await executor2.execute(makeReq('echo x'), 'taskA', 'sessionA', fixedResolver('sessionA'));
   expect(r.exitCode).toBe(0);
 });
+
+
+// ============ L0 自动放行（Phase 1.3） ============
+
+test('L0 自动放行：不调用审批弹窗，但走完后续校验与执行', async () => {
+  let handlerCalls = 0;
+  const handler = { requestApproval: async () => { handlerCalls++; return 'allow_once'; } };
+  const runner = okRunner();
+  const executor = new SandboxExecutor(handler, runner);
+
+  // cmd 下的 ver 是白名单命令
+  const req = makeReq('ver');
+  const r = await executor.execute(req, 'taskA', 'sessionA', fixedResolver('sessionA'));
+
+  expect(r.exitCode).toBe(0);
+  expect(runner.calls).toBe(1);
+  expect(handlerCalls).toBe(0); // 关键：没弹窗
+});
+
+test('L0 自动放行：仍受会话校验约束（前置不匹配拒绝）', async () => {
+  const runner = okRunner();
+  const executor = new SandboxExecutor(okHandler(), runner);
+  const req = makeReq('ver');
+
+  await expect(
+    executor.execute(req, 'taskA', 'sessionA', fixedResolver('sessionB'))
+  ).rejects.toThrow(/会话与当前活动会话不一致/);
+  expect(runner.calls).toBe(0);
+});
+
+test('L0 自动放行：仍受并发去重约束', async () => {
+  const runner = { calls: 0, run: async () => { runner.calls++; await new Promise(r => setTimeout(r, 50)); return { stdout: '', stderr: '', exitCode: 0 }; } };
+  const executor = new SandboxExecutor(okHandler(), runner);
+  const req = makeReq('ver');
+  const resolver = fixedResolver('sessionA');
+
+  const p1 = executor.execute(req, 'taskA', 'sessionA', resolver);
+  const p2 = executor.execute(req, 'taskA', 'sessionA', resolver);
+
+  await expect(p2).rejects.toThrow(/正在审批或执行中/);
+  await p1;
+  expect(runner.calls).toBe(1);
+});
+
+test('L0 自动放行：审计日志含 Auto-approved 且不含敏感 env 明文', async () => {
+  const logs = [];
+  const logger = { log: (snap, res, err) => logs.push({ snap, res, err }) };
+  const executor = new SandboxExecutor(okHandler(), okRunner(), logger);
+  const req = {
+    type: 'shell', shellType: 'cmd', rawCommand: 'ver', cwd: 'D:\\',
+    env: { GITHUB_TOKEN: 'secret-l0-token' },
+  };
+
+  await executor.execute(req, 'taskA', 'sessionA', fixedResolver('sessionA'));
+
+  const autoLog = logs.find(l => l.err && l.err.includes('Auto-approved L0'));
+  expect(autoLog).toBeTruthy();
+  // 日志里的快照不应含明文 token
+  const serialized = JSON.stringify(autoLog.snap);
+  expect(serialized).not.toContain('secret-l0-token');
+});
+
+test('L2 行为不变：非白名单命令仍要弹窗', async () => {
+  let handlerCalls = 0;
+  const handler = { requestApproval: async () => { handlerCalls++; return 'allow_once'; } };
+  const runner = okRunner();
+  const executor = new SandboxExecutor(handler, runner);
+
+  // echo hi 不在白名单里
+  await executor.execute(makeReq('echo hi'), 'taskA', 'sessionA', fixedResolver('sessionA'));
+  expect(handlerCalls).toBe(1);
+});
+
+
+// ============ L0 补齐：判定器异常 / 失败 / 超时 / 审计状态 ============
+
+test('L0 判定器异常 → 回退 L2，仍弹窗（fail closed）', async () => {
+  let handlerCalls = 0;
+  const handler = { requestApproval: async () => { handlerCalls++; return 'allow_once'; } };
+  const runner = okRunner();
+  const executor = new SandboxExecutor(handler, runner);
+
+  // rawCommand = null：
+  // - getSignature() 里 'shell:cmd:' + null + ':D:\' → 字符串拼接安全
+  // - isCmdReadOnly() 里 null.trim() → TypeError，被 assessRisk 的 catch 捕获
+  // - JSON.stringify({ rawCommand: null }) → 正常序列化
+  const evilReq = {
+    type: 'shell',
+    shellType: 'cmd',
+    rawCommand: null,
+    cwd: 'D:\\',
+    env: {},
+  };
+
+  // 关键：判定器抛错时不能静默放行，必须回退 L2 走审批
+  // （执行可能失败，但 handler 必须被调用）
+  try {
+    await executor.execute(evilReq, 'taskA', 'sessionA', fixedResolver('sessionA'));
+  } catch (_) { /* 执行可能失败，不影响核心断言 */ }
+
+  expect(handlerCalls).toBe(1);
+});
+
+test('L0 执行失败 → 状态 failed，锁已释放', async () => {
+  const runner = {
+    calls: 0,
+    run: async () => {
+      runner.calls++;
+      return { stdout: '', stderr: 'boom', exitCode: 1 };
+    }
+  };
+  const logs = [];
+  const logger = { log: (snap, res, err) => logs.push({ snap, res, err }) };
+  const executor = new SandboxExecutor(okHandler(), runner, logger);
+
+  const r = await executor.execute(makeReq('ver'), 'taskA', 'sessionA', fixedResolver('sessionA'));
+  expect(r.exitCode).toBe(1);
+
+  const finalSnap = logs.filter(l => l.res).pop();
+  expect(finalSnap).toBeTruthy();
+  expect(finalSnap.snap.status).toBe('failed');
+
+  // 锁已释放：同签名可再次执行
+  const r2 = await executor.execute(makeReq('ver'), 'taskA', 'sessionA', fixedResolver('sessionA'));
+  expect(r2.exitCode).toBe(1);
+  expect(runner.calls).toBe(2);
+});
+
+test('L0 超时 → 状态 timed_out，锁已释放', async () => {
+  const runner = {
+    calls: 0,
+    run: async () => {
+      runner.calls++;
+      return { stdout: '', stderr: '', exitCode: -1, isTimeout: true };
+    }
+  };
+  const logs = [];
+  const logger = { log: (snap, res, err) => logs.push({ snap, res, err }) };
+  const executor = new SandboxExecutor(okHandler(), runner, logger);
+
+  const r = await executor.execute(makeReq('ver'), 'taskA', 'sessionA', fixedResolver('sessionA'));
+  expect(r.isTimeout).toBe(true);
+
+  const finalSnap = logs.filter(l => l.res).pop();
+  expect(finalSnap).toBeTruthy();
+  expect(finalSnap.snap.status).toBe('timed_out');
+
+  const r2 = await executor.execute(makeReq('ver'), 'taskA', 'sessionA', fixedResolver('sessionA'));
+  expect(r2.isTimeout).toBe(true);
+  expect(runner.calls).toBe(2);
+});
+
+test('L0 审计快照状态不伪造为 approved/succeeded', async () => {
+  const logs = [];
+  const logger = { log: (snap, res, err) => logs.push({ snap, res, err }) };
+  const executor = new SandboxExecutor(okHandler(), okRunner(), logger);
+
+  await executor.execute(makeReq('ver'), 'taskA', 'sessionA', fixedResolver('sessionA'));
+
+  const autoLog = logs.find(l => l.err && l.err.includes('Auto-approved L0'));
+  expect(autoLog).toBeTruthy();
+  // 关键断言：快照状态必须是 pending（登记时的原始状态）
+  expect(autoLog.snap.status).toBe('pending');
+  expect(autoLog.snap.status).not.toBe('approved');
+  expect(autoLog.snap.status).not.toBe('succeeded');
+});

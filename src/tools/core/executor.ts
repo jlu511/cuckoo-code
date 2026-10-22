@@ -6,6 +6,7 @@
  */
 
 import crypto from 'node:crypto';
+import { isL0ReadOnly } from './readonly-checker.js';
 
 export interface ProcessRequest {
   type: 'process';
@@ -180,17 +181,28 @@ export class SandboxExecutor {
       // 3. 审批
       const risk = this.assessRisk(req);
       let decision: ApprovalDecision;
-      try {
-        const dto: ApprovalDTO = {
-          id: snapshot.id,
-          request: JSON.parse(JSON.stringify(req)),
-          riskLevel: risk.level,
-          riskReasons: risk.reasons,
-        };
-        decision = await this.approvalHandler.requestApproval(dto);
-      } catch (err: any) {
-        this.registry.delete(snapshot.id);
-        throw new Error('审批过程发生异常: ' + (err.message || err));
+
+      if (risk.level === 'L0') {
+        // L0：跳过弹窗，直接自动放行。后续校验（快照/TTL/会话/拒绝/执行）全部保留。
+        decision = 'allow_once';
+        this.auditLogger?.log(
+          sanitizeSnapshot(snapshot),
+          undefined,
+          'Auto-approved L0: ' + risk.reasons.join('; ')
+        );
+      } else {
+        try {
+          const dto: ApprovalDTO = {
+            id: snapshot.id,
+            request: JSON.parse(JSON.stringify(req)),
+            riskLevel: risk.level,
+            riskReasons: risk.reasons,
+          };
+          decision = await this.approvalHandler.requestApproval(dto);
+        } catch (err: any) {
+          this.registry.delete(snapshot.id);
+          throw new Error('审批过程发生异常: ' + (err.message || err));
+        }
       }
 
       // 4. 校验快照状态与过期
@@ -288,6 +300,13 @@ export class SandboxExecutor {
   }
 
   private assessRisk(req: ExecRequest): { level: 'L0'|'L1'|'L2'|'L3', reasons: string[] } {
+    try {
+      if (isL0ReadOnly(req)) {
+        return { level: 'L0', reasons: ['只读命令白名单命中'] };
+      }
+    } catch (_) {
+      // 判定器异常 → fail closed，回退 L2
+    }
     return { level: 'L2', reasons: ['默认策略：应用层执行请求'] };
   }
 
