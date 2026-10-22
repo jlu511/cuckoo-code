@@ -55,7 +55,6 @@ export async function showDefaultMcpLaunchDialog(snapshot: McpLaunchSnapshot): P
     const { dialog, BrowserWindow } = require('electron');
     const wins = BrowserWindow.getAllWindows();
     const mainWin = wins.length > 0 ? wins[0] : null;
-    if (mainWin) mainWin.setAlwaysOnTop(true);
 
     const { response } = await dialog.showMessageBox(mainWin || undefined, {
       type: 'warning',
@@ -66,8 +65,6 @@ export async function showDefaultMcpLaunchDialog(snapshot: McpLaunchSnapshot): P
       defaultId: 2,
       cancelId: 2,
     });
-
-    if (mainWin) mainWin.setAlwaysOnTop(false);
 
     if (response === 0) return 'allow_once';
     if (response === 1) return 'allow_session';
