@@ -2,23 +2,9 @@ import type { ExecRequest } from './executor.js';
 
 /**
  * 判断是否为绝对安全的只读命令。
- * ⚠️ 原则：最小放行，宁可错杀不可放过。
- * 只要包含连接符、重定向、变量展开、引号、转义等，直接返回 false（走审批）。
- *
- * 注意：判定器仅限制命令形式，不证明实际执行的二进制文件可信。
+ * 原则：最小放行，宁可错杀不可放过。
  */
 
-/**
- * 已知安全的版本查询 binary 白名单。
- *
- * ⚠️ 仅做名字字符串匹配，不解析实际执行路径。
- * PATH 中存在同名恶意程序时仍可能被执行。收窄白名单只缩小攻击面，
- * 不消除 PATH 劫持风险。
- *
- * 收录原则：Cuckoo Code 自身与日常开发高频工具。
- * 已移除：mvn/gradle/cargo/go/rustc/dotnet/msbuild（低频）、
- *          cc/c++/py/yarn/pnpm（可能指向任意目标）
- */
 const KNOWN_SAFE_BINARIES = new Set([
   'gcc', 'g++', 'clang', 'clang++',
   'node', 'npm', 'npx',
@@ -26,11 +12,7 @@ const KNOWN_SAFE_BINARIES = new Set([
   'git',
 ]);
 
-/** 匹配二进制版本查询（如 gcc --version, node -v） */
 const VERSION_ARGS_RE = /^([a-z][a-z0-9+-]*)\s+(--version|-v|--v)$/i;
-
-/** 危险字符：命令连接、重定向、管道、变量、引号、转义、换行 */
-const DANGEROUS_CHARS_RE = /[;&|<>\`$"'%!^()\n\r]/;
 
 export function isL0ReadOnly(req: ExecRequest): boolean {
   if (req.type === 'shell') {
@@ -55,12 +37,39 @@ function isKnownBinaryVersion(cmd: string): boolean {
   return KNOWN_SAFE_BINARIES.has(m[1].toLowerCase());
 }
 
-function isCmdReadOnly(cmd: string): boolean {
-  const trimmed = cmd.trim();
-  if (!trimmed) return false;
+/** 校验 dir 参数（不含 &，用于单命令和链式命令共用） */
+function isSafeDirArgs(content: string): boolean {
+  if (content.toLowerCase() === 'dir') return true;
+  const dirMatch = content.match(/^dir\s+(.+)$/i);
+  if (!dirMatch) return false;
 
-  if (DANGEROUS_CHARS_RE.test(trimmed)) return false;
+  const args = dirMatch[1].trim();
+  // 关键防御：重定向符号一旦出现，无论位置如何，一律拒绝（防止 /b>nul 被当路径）
+  if (/[<>|;&]/.test(args)) return false;
+  if (/\/s\b/i.test(args)) return false;
+  if (args.includes('..')) return false;
 
+  const argsNoPath = args.replace(/"[^"]+"/g, 'PATH_HERE');
+  const parts = argsNoPath.split(/\s+/);
+  let hasPath = false;
+  for (const p of parts) {
+    if (p === 'PATH_HERE') {
+      if (hasPath) return false;
+      hasPath = true;
+    } else if (/^\/[abw]$/i.test(p)) {
+      continue;
+    } else if (/^[^"\s]+$/.test(p)) {
+      if (hasPath) return false;
+      hasPath = true;
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** 单命令白名单：ver / where / dir / binary --version */
+function isSafeSingleCmd(trimmed: string): boolean {
   const lower = trimmed.toLowerCase();
   if (lower === 'ver') return true;
 
@@ -69,20 +78,80 @@ function isCmdReadOnly(cmd: string): boolean {
     return true;
   }
 
-  if (/^dir(\s+\/[abw])*$/i.test(trimmed)) {
-    return true;
-  }
+  if (isSafeDirArgs(trimmed)) return true;
 
   if (isKnownBinaryVersion(trimmed)) return true;
 
   return false;
 }
 
-function isPwshReadOnly(cmd: string): boolean {
+/** 链式段白名单：仅 echo 和 dir */
+function isSafeChainSegment(seg: string): boolean {
+  if (!seg) return false;
+  let content = seg;
+
+  const redirMatch = content.match(/\s+(2>nul|>nul)$/i);
+  if (redirMatch) content = content.slice(0, redirMatch.index).trim();
+
+  if (/[<>|;&]/.test(content)) return false;
+
+  if (/^echo\s+"[^"%!^&|<>]*"$/i.test(content)) return true;
+  if (/^echo\s*""$/i.test(content)) return true;
+
+  if (isSafeDirArgs(content)) return true;
+
+  return false;
+}
+
+/** 链式命令（按引号感知的 & 拆分） */
+function isSafeCmdChain(trimmed: string): boolean {
+  const segments: string[] = [];
+  let current = '';
+  let inQuote = false;
+
+  for (let i = 0; i < trimmed.length; i++) {
+    const char = trimmed[i];
+    if (char === '"') inQuote = !inQuote;
+    if (char === '&' && !inQuote) {
+      if (trimmed[i-1] === '&' || trimmed[i+1] === '&') return false;
+      segments.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  segments.push(current.trim());
+
+  if (segments.length === 0) return false;
+  return segments.every(seg => isSafeChainSegment(seg));
+}
+
+function isCmdReadOnly(cmd: string): boolean {
   const trimmed = cmd.trim();
   if (!trimmed) return false;
 
-  if (DANGEROUS_CHARS_RE.test(trimmed)) return false;
+  if (/[|;<\`$^()\n\r%!]/.test(trimmed)) return false;
+  if (trimmed.includes("'")) return false;
+  if (trimmed.includes('&&') || trimmed.includes('||')) return false;
+  if ((trimmed.split('"').length - 1) % 2 !== 0) return false;
+
+  let hasUnquotedAmp = false;
+  let inQuote = false;
+  for (let i = 0; i < trimmed.length; i++) {
+    if (trimmed[i] === '"') inQuote = !inQuote;
+    if (trimmed[i] === '&' && !inQuote) { hasUnquotedAmp = true; break; }
+  }
+
+  if (hasUnquotedAmp) return isSafeCmdChain(trimmed);
+  return isSafeSingleCmd(trimmed);
+}
+
+const PWSH_DANGEROUS_RE = /[;&|<>\`$"'%!^()\n\r]/;
+
+function isPwshReadOnly(cmd: string): boolean {
+  const trimmed = cmd.trim();
+  if (!trimmed) return false;
+  if (PWSH_DANGEROUS_RE.test(trimmed)) return false;
 
   const lower = trimmed.toLowerCase();
   if (lower === 'get-location') return true;
@@ -91,6 +160,5 @@ function isPwshReadOnly(cmd: string): boolean {
   if (lower === 'get-psdrive') return true;
 
   if (isKnownBinaryVersion(trimmed)) return true;
-
   return false;
 }
