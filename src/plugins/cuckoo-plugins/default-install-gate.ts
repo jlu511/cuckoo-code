@@ -54,7 +54,6 @@ export class DefaultPluginInstallGate implements PluginInstallGate {
       const { dialog, BrowserWindow } = require('electron');
       const wins = BrowserWindow.getAllWindows();
       const mainWin = wins.length > 0 ? wins[0] : null;
-      if (mainWin) mainWin.setAlwaysOnTop(true);
 
       const { response } = await dialog.showMessageBox(mainWin || undefined, {
         type: 'warning',
@@ -66,7 +65,6 @@ export class DefaultPluginInstallGate implements PluginInstallGate {
         cancelId: 1,
       });
 
-      if (mainWin) mainWin.setAlwaysOnTop(false);
       return response === 0 ? 'allow' : 'deny';
     } catch (e: any) {
       console.error('[Plugin Install] 无法显示弹窗，安全兜底拒绝:', e.message || e);

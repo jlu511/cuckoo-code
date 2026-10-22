@@ -89,11 +89,7 @@ export class DefaultApprovalHandler implements ApprovalHandler {
       const wins = BrowserWindow.getAllWindows();
       const mainWin = wins.length > 0 ? wins[0] : null;
 
-      if (mainWin) {
-        mainWin.setAlwaysOnTop(true);
-        mainWin.focus();
-      }
-
+      // 移除强制置顶与强制 focus：避免与 WebContentsView 抢占焦点导致弹窗鼠标事件失效
       const { response } = await dialog.showMessageBox(mainWin || undefined, {
         type: isHighRisk ? 'error' : 'warning',
         title: isHighRisk ? '🚨 高危操作拦截' : '执行系统命令确认',
@@ -103,10 +99,6 @@ export class DefaultApprovalHandler implements ApprovalHandler {
         defaultId: 1,
         cancelId: 1,
       });
-
-      if (mainWin) {
-        mainWin.setAlwaysOnTop(false);
-      }
 
       return response === 0 ? 'allow_once' : 'deny';
     } catch (e: any) {
