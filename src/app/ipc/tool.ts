@@ -34,12 +34,21 @@ function registerToolIpc(): void {
         const s = ctx ? ctx.sessionStore : null;
         return s ? s.state.currentSessionId : null;
       };
+      // 需求 032：会话代次提供者（可信来源是主进程的 sessionStore，不接受脚本伪造）
+      const sessionGenerationProvider = () => {
+        const s = ctx ? ctx.sessionStore : null;
+        return s ? s.state.sessionGeneration : -1;
+      };
+      // 需求 032：profile 隔离标识（不同 profile 的 sessionId 可能撞车）
+      const sessionScopeId = ctx ? ctx.profileId : null;
       const result = await toolRegistry.execute(toolName, {
         ...params,
         projectDir: selectedDir,
         currentWindowId: windowId,
         activeSessionId: sessionId,
         sessionResolver,
+        sessionGenerationProvider,
+        sessionScopeId,
       });
       return { callId, success: result.success, data: result.data, error: result.error };
     } catch (err: any) {
@@ -63,7 +72,22 @@ function registerToolIpc(): void {
         const s = ctx ? ctx.sessionStore : null;
         return s ? s.state.currentSessionId : null;
       };
-      const result = await jsRunner.run(code, selectedDir, windowId, { attachDelayMin, attachDelayMax, sessionId, ssrfGuard, sessionResolver });
+      // 需求 032：会话代次提供者（可信来源是主进程的 sessionStore）
+      const sessionGenerationProvider = () => {
+        const s = ctx ? ctx.sessionStore : null;
+        return s ? s.state.sessionGeneration : -1;
+      };
+      // 需求 032：profile 隔离标识
+      const sessionScopeId = ctx ? ctx.profileId : null;
+      const result = await jsRunner.run(code, selectedDir, windowId, {
+        attachDelayMin,
+        attachDelayMax,
+        sessionId,
+        ssrfGuard,
+        sessionResolver,
+        sessionGenerationProvider,
+        sessionScopeId,
+      });
       // 复用官方 todoWrite 结果：执行后读取 globalThis.__cuckooTodos（官方规范化的列表），推给 harness
       try {
         const todos = (globalThis as any).__cuckooTodos;

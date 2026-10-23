@@ -110,17 +110,27 @@ export class DefaultApprovalHandler implements ApprovalHandler {
         ? 'AI 请求访问敏感文件，是否允许？'
         : 'AI 请求执行以下命令，是否允许？';
 
+      // 需求 032：仅当执行器判定「允许会话授权」时才显示第三个按钮。
+      // L3 敏感路径 / 高危命令 / Git 状态变更 / 命令链 一律只有 2 个按钮。
+      const allowSession = dto.canAllowSession === true;
+      const buttons = allowSession
+        ? ['允许执行', '本会话内允许', '拒绝 (默认)']
+        : ['允许执行', '拒绝 (默认)'];
+      const denyId = buttons.length - 1;
+
       const { response } = await dialog.showMessageBox(mainWin || undefined, {
         type: isHighRisk ? 'error' : 'warning',
         title,
         message,
         detail,
-        buttons: ['允许执行', '拒绝 (默认)'],
-        defaultId: 1,
-        cancelId: 1,
+        buttons,
+        defaultId: denyId,
+        cancelId: denyId,
       });
 
-      return response === 0 ? 'allow_once' : 'deny';
+      if (response === 0) return 'allow_once';
+      if (allowSession && response === 1) return 'allow_session';
+      return 'deny';
     } catch (e: any) {
       // 无 Electron 环境（如测试）下安全兜底：直接拒绝
       console.error('[Sandbox] 无法加载弹窗，出于安全考虑已自动拒绝:', e.message || e);

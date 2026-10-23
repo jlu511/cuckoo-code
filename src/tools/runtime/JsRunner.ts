@@ -201,6 +201,8 @@ class JsRunner {
         try {
           const trustedSessionId = (settings && settings.sessionId) || null;
           const trustedResolver = (settings && settings.sessionResolver) || null;
+          // 需求 032：会话代次提供者只能来自主进程注入的 settings，不接受脚本参数覆盖
+          const trustedGenProvider = (settings && settings.sessionGenerationProvider) || null;
           result = await tool.execute(
             Object.assign(
               {},
@@ -211,6 +213,7 @@ class JsRunner {
                 currentWindowId: windowId,
                 activeSessionId: trustedSessionId,
                 sessionResolver: trustedResolver,
+                sessionGenerationProvider: trustedGenProvider,
               }
             )
           );

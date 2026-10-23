@@ -24,6 +24,9 @@ function addWindow(win: any, profileId: any, providerId: any, sessionStore: any,
   windows.set(win.id, { win, view, profileId, providerId, sessionStore, isSubagent: !!isSubagent });
   lastActiveWindowId = win.id;
   win.on('closed', () => {
+    // 需求 032：窗口关闭 = 会话上下文销毁 → 递增 generation，使该窗口的会话授权全部失效。
+    // 即使重建窗口后复用同一 sessionId，旧授权键也不会命中。
+    try { sessionStore?.invalidateSessionGeneration?.(); } catch (_) { /* ignore */ }
     windows.delete(win.id);
     if (lastActiveWindowId === win.id) {
       const remaining = Array.from(windows.keys());

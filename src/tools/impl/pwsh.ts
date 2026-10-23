@@ -93,7 +93,7 @@ class PwshTool extends Tool {
   }
 
   async execute(params: any): Promise<ToolResult> {
-    const { command, description, workdir, timeoutMs, projectDir, activeSessionId, sessionResolver } = params;
+    const { command, description, workdir, timeoutMs, projectDir, activeSessionId, sessionResolver, sessionGenerationProvider, sessionScopeId, currentWindowId } = params;
 
     try {
       if (!command || typeof command !== 'string') {
@@ -144,7 +144,16 @@ class PwshTool extends Tool {
       };
 
       const executor = getSandboxExecutor();
-      const result = await executor.execute(req, activeSessionId, activeSessionId, sessionResolver);
+      // 需求 032：provider 可选；缺失时执行器会禁用会话授权（fail-closed）
+      const result = await executor.execute(
+        req,
+        activeSessionId,
+        activeSessionId,
+        sessionResolver,
+        typeof sessionGenerationProvider === 'function' ? sessionGenerationProvider : undefined,
+        typeof sessionScopeId === 'string' ? sessionScopeId : undefined,
+        typeof currentWindowId === 'number' ? currentWindowId : undefined
+      );
 
       // 渲染结果（与 bash.ts 保持一致）
       let body = result.stdout;

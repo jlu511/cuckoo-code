@@ -35,5 +35,6 @@
 | 029 | feature | [敏感路径 L3 授权统一](./029-sensitive-path-l3-auth.md) | done | dev | 2026-10-23 |
 | 030 | fix | [只读模式命令执行权限守卫](./030-readonly-mode-command-permission-guard.md) | done | dev | 2026-10-23 |
 | 031 | feature | [只读 Git 子命令白名单扩展](./031-readonly-git-subcommand-whitelist.md) | done | feat/031-readonly-git-subcommand-whitelist | 2026-10-23 |
+| 032 | feature | [会话级命令授权（allow_session）](./032-session-scoped-command-approval.md) | done | feat/032-session-scoped-command-approval | 2026-10-23 |
 
-共 30 个需求。
+共 31 个需求。

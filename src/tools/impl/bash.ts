@@ -103,7 +103,7 @@ class BashTool extends Tool {
   }
 
   async execute(params: any): Promise<ToolResult> {
-    const { command, description, workdir, timeoutMs, projectDir, activeSessionId, sessionResolver } = params;
+    const { command, description, workdir, timeoutMs, projectDir, activeSessionId, sessionResolver, sessionGenerationProvider, sessionScopeId, currentWindowId } = params;
 
     try {
       if (!command || typeof command !== 'string') {
@@ -155,7 +155,16 @@ class BashTool extends Tool {
 
       const executor = getSandboxExecutor();
       // taskId 复用 sessionId：同会话内的熔断生效，跨会话互不影响
-      const result = await executor.execute(req, activeSessionId, activeSessionId, sessionResolver);
+      // 需求 032：provider 可选；缺失时执行器会禁用会话授权（fail-closed）
+      const result = await executor.execute(
+        req,
+        activeSessionId,
+        activeSessionId,
+        sessionResolver,
+        typeof sessionGenerationProvider === 'function' ? sessionGenerationProvider : undefined,
+        typeof sessionScopeId === 'string' ? sessionScopeId : undefined,
+        typeof currentWindowId === 'number' ? currentWindowId : undefined
+      );
 
       // 渲染结果
       let body = result.stdout;

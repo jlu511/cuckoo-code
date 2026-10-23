@@ -10,6 +10,7 @@ import { isL0ReadOnly } from './readonly-checker.js';
 import { scanForSensitiveAccess } from './sensitive-guard.js';
 import { runSafetyPrecheck, type PrecheckOutcome } from './safety-precheck.js';
 import { checkCommandPermission } from '../../infra/permission.js';
+import { buildRequestFingerprint, isSessionGrantBlocked } from './session-grant-policy.js';
 
 export interface ProcessRequest {
   type: 'process';
@@ -51,6 +52,12 @@ export interface ApprovalDTO {
   request: ExecRequest;
   riskLevel: 'L0' | 'L1' | 'L2' | 'L3';
   riskReasons: string[];
+  /**
+   * 是否允许显示「本会话内允许」按钮（需求 032）。
+   * 由执行器计算：L3 / 高危 / Git 状态变更 / 命令链 / 代次非法 → false。
+   * 处理器若在 false 时仍返回 allow_session，执行器会 fail-closed。
+   */
+  canAllowSession?: boolean;
 }
 
 export type ApprovalDecision = 'allow_once' | 'allow_session' | 'deny';
@@ -97,6 +104,14 @@ export interface AuditLogger {
  */
 export type SessionIdProvider = () => string | null;
 
+/**
+ * 会话代次提供者（需求 032）。
+ * 每次会话切换（含 A→B、A→null、null→A）都应递增。
+ * 用于让旧会话的授权永远无法命中——包括 A→B→A 场景。
+ * 返回值必须是安全整数且 >= 0，否则会话授权功能禁用（fail-closed）。
+ */
+export type SessionGenerationProvider = () => number;
+
 export interface SandboxOptions {
   /** pending 状态最长存活时间（毫秒）。超时后视为 expired，拒绝执行。默认 5 分钟。 */
   pendingTtlMs?: number;
@@ -131,6 +146,12 @@ export class SandboxExecutor {
   private activeControllers = new Map<string, AbortController>();
   /** 相同 taskId + 签名并发去重锁 */
   private runningSignatures = new Set<string>();
+  /**
+   * 会话授权缓存（需求 032）。
+   * key = generation::sessionId::fingerprint；value 恒为 true（只存已授权）。
+   * 不存「拒绝」——拒绝由 denials + denialWindowMs 处理，语义不同。
+   */
+  private sessionGrants = new Map<string, true>();
 
   private readonly pendingTtlMs: number;
   private readonly denialWindowMs: number;
@@ -156,7 +177,10 @@ export class SandboxExecutor {
     req: ExecRequest,
     taskId: string,
     sessionId: string,
-    getCurrentSessionId: SessionIdProvider
+    getCurrentSessionId: SessionIdProvider,
+    getSessionGeneration?: SessionGenerationProvider,
+    scopeId?: string,
+    windowId?: number
   ): Promise<ProcessResult> {
     // 0. 请求所属会话必须有效（拒绝伪造/空值）
     if (!sessionId || typeof sessionId !== 'string' || sessionId.trim() === '') {
@@ -254,6 +278,41 @@ export class SandboxExecutor {
       const risk = this.assessRisk(req, precheck);
       let decision: ApprovalDecision;
 
+      // 5a. 会话代次（需求 032）：非法值 → 禁用会话授权（fail-closed）
+      //     在审批前读取一次，用于缓存查询；审批后再读一次，用于写缓存前的二次校验。
+      const genBefore = this.resolveGeneration(getSessionGeneration);
+
+      // 5b. 会话授权缓存查询（仅在 L2 且资格允许时）
+      //     位置必须在只读权限、CCSN、敏感路径判定之后——它们已全部通过。
+      //
+      //     scopeId（profile 标识）与 windowId（窗口实例标识）都必须有效才启用会话授权：
+      //       - scopeId 缺失 → 不同 profile 的相同 sessionId 会共享授权键
+      //       - windowId 缺失 → 同一 profile+会话在不同窗口间会共享授权键
+      //     与 generation 缺失一致，采用 fail-closed。
+      const scopeValid = typeof scopeId === 'string' && scopeId.trim() !== '';
+      const windowValid =
+        typeof windowId === 'number' &&
+        Number.isSafeInteger(windowId) &&
+        windowId > 0;
+      const grantEligible =
+        risk.level === 'L2' &&
+        !isSessionGrantBlocked(req, risk.level) &&
+        genBefore !== null &&
+        scopeValid &&
+        windowValid;
+      let grantKey: string | null = null;
+      let cacheHit = false;
+      if (grantEligible) {
+        grantKey = this.buildGrantKey(
+          genBefore as number,
+          sessionId,
+          req,
+          scopeId as string,
+          windowId as number
+        );
+        if (this.sessionGrants.has(grantKey)) cacheHit = true;
+      }
+
       if (risk.level === 'L0') {
         // L0：跳过弹窗，直接自动放行。后续校验（快照/TTL/会话/拒绝/执行）全部保留。
         decision = 'allow_once';
@@ -262,6 +321,14 @@ export class SandboxExecutor {
           undefined,
           'Auto-approved L0: ' + risk.reasons.join('; ')
         );
+      } else if (cacheHit) {
+        // 会话授权命中：跳过弹窗。后续所有校验（快照/TTL/会话/代次/执行）全部保留。
+        decision = 'allow_session';
+        this.auditLogger?.log(
+          sanitizeSnapshot(snapshot),
+          undefined,
+          'Session grant hit: ' + (grantKey || '').slice(0, 16) + '…'
+        );
       } else {
         try {
           const dto: ApprovalDTO = {
@@ -269,6 +336,7 @@ export class SandboxExecutor {
             request: JSON.parse(JSON.stringify(req)),
             riskLevel: risk.level,
             riskReasons: risk.reasons,
+            canAllowSession: grantEligible,
           };
           decision = await this.approvalHandler.requestApproval(dto);
         } catch (err: any) {
@@ -305,11 +373,44 @@ export class SandboxExecutor {
         throw new Error(msg);
       }
 
+      // 6b. 会话代次二次校验（需求 032）
+      //     覆盖「审批弹窗打开期间发生 A→B→A」：sessionId 相同但 generation 变了。
+      const genAfter = this.resolveGeneration(getSessionGeneration);
+      if (genBefore !== genAfter) {
+        snap.status = 'expired';
+        const msg = '安全策略拒绝：审批期间会话代次已变化，请求作废。';
+        this.auditLogger?.log(sanitizeSnapshot(snap), undefined, msg);
+        throw new Error(msg);
+      }
+
+      // 6c. 防御性复核：allow_session 只能来自「本次允许会话授权」的弹窗
+      //     - grantEligible 已包含 L2 + 非禁止 + generation 有效 + scope 有效
+      //     - 弹窗返回时，必须在 canAllowSession === true 的前提下才可信
+      if (decision === 'allow_session' && !cacheHit) {
+        if (!grantEligible) {
+          snap.status = 'denied';
+          const msg = '安全策略拒绝：该请求不允许会话授权，但审批返回了 allow_session。';
+          this.auditLogger?.log(sanitizeSnapshot(snap), undefined, msg);
+          throw new Error(msg);
+        }
+      }
+
       if (decision === 'deny') {
         snap.status = 'denied';
         this.recordDenial(denialKey);
         this.auditLogger?.log(sanitizeSnapshot(snap), undefined, 'User denied');
         throw new Error('用户拒绝了此操作。');
+      }
+
+      // 6d. 写入会话授权缓存（需求 032）
+      //     只在此刻写入：deny 已排除、代次未变、资格已确认、快照未过期。
+      if (decision === 'allow_session' && !cacheHit && grantKey && grantEligible) {
+        this.sessionGrants.set(grantKey, true);
+        this.auditLogger?.log(
+          sanitizeSnapshot(snap),
+          undefined,
+          'Session grant stored: ' + grantKey.slice(0, 16) + '…'
+        );
       }
 
       // 7. 执行（pending -> running 在单线程内原子）
@@ -337,6 +438,57 @@ export class SandboxExecutor {
     } finally {
       this.runningSignatures.delete(runningKey);
     }
+  }
+
+  /**
+   * 清空所有会话授权（需求 032）。
+   * 供窗口关闭 / 会话上下文销毁 / 测试使用。
+   */
+  clearSessionGrants(): void {
+    this.sessionGrants.clear();
+  }
+
+  /** 当前缓存条目数（测试与诊断用） */
+  getSessionGrantCount(): number {
+    return this.sessionGrants.size;
+  }
+
+  /**
+   * 读取并校验会话代次（需求 032）。
+   * 非法值（未注入 / 抛错 / 非安全整数 / 负数）一律返回 null → 禁用会话授权。
+   */
+  private resolveGeneration(provider?: SessionGenerationProvider): number | null {
+    if (typeof provider !== 'function') return null;
+    let v: unknown;
+    try {
+      v = provider();
+    } catch (_) {
+      return null;
+    }
+    if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0) return null;
+    return v;
+  }
+
+  /**
+   * 构造会话授权缓存键：
+   *   scope::window::generation::sessionId::fingerprint
+   *
+   * 三段作用域各司其职：
+   *   - scope（profileId）：不同 profile 的 sessionId 可能相同，需隔离
+   *   - window（Electron window.id）：同 profile + 同会话在不同窗口间不共享授权。
+   *     窗口重建会分配新 id，因此旧窗口的授权不会随新窗口复活
+   *   - generation（进程级全局）：任一窗口切换会话或关闭，使所有旧键失效
+   *
+   * 调用方必须先确认三者有效才会走到这里（见 execute() 的 grantEligible）。
+   */
+  private buildGrantKey(
+    gen: number,
+    sessionId: string,
+    req: ExecRequest,
+    scopeId: string,
+    windowId: number
+  ): string {
+    return scopeId + '::' + windowId + '::' + gen + '::' + sessionId + '::' + buildRequestFingerprint(req);
   }
 
   /**

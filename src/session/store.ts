@@ -7,6 +7,30 @@ import path from 'node:path';
 import { getProviderByUrl } from '../providers/registry.js';
 
 /**
+ * 进程级会话代次计数器（需求 032）。
+ *
+ * 为什么必须是模块级全局而不是每个 store 一份：
+ *   - SandboxExecutor 的 sessionGrants 是进程级单例（工具层注入一次，所有窗口共用）
+ *   - 每个窗口有独立的 session store 实例（createSessionStore 每次新建）
+ *   - 若 generation 存在 store 里：窗口关闭 → 该 store 销毁 → 新窗口的 store 从 0 重计
+ *     → 与旧窗口早期 generation 碰撞 → 旧授权意外复活
+ *
+ * 因此所有 store 共享同一个单调递增计数器。
+ * 代价：任一窗口的会话切换或关闭会使**所有窗口**的会话授权失效（保守但安全）。
+ */
+let globalSessionGeneration = 0;
+
+/** 读取当前进程级会话代次（任何 store 都读同一个值） */
+function getGlobalSessionGeneration(): number {
+  return globalSessionGeneration;
+}
+
+/** 递增进程级会话代次（会话切换 / 窗口关闭时调用） */
+function invalidateGlobalSessionGeneration(): number {
+  return ++globalSessionGeneration;
+}
+
+/**
  * 创建 profile 专属的 session store 实例
  * @param profileId profile id
  * @param storeDir 存储目录（通常是 userData）
@@ -228,6 +252,13 @@ function createSessionStore(profileId: string, storeDir: string, windowState: an
 
   const state: any = {
     currentSessionId: null,
+    /**
+     * 会话代次（需求 032）：getter 读取**进程级全局**计数器。
+     * 每个 store 读到的都是同一个最新值，不会因窗口重建而归零。
+     */
+    get sessionGeneration(): number {
+      return getGlobalSessionGeneration();
+    },
     selectedProjectDir: null,
     pendingProjectDir: null,
     pendingTitle: null,
@@ -254,8 +285,22 @@ function createSessionStore(profileId: string, storeDir: string, windowState: an
     } catch (_) { /* ignore */ }
   }
 
+  /**
+   * 显式使会话上下文失效（需求 032）。
+   * 递增**进程级**计数器，使所有窗口的旧会话授权全部失效。
+   * 用于窗口关闭等「会话上下文销毁」场景。
+   */
+  function invalidateSessionGeneration(): void {
+    invalidateGlobalSessionGeneration();
+  }
+
   function handleUrlChange(url: string, targetView?: any): void {
     const sessionId = extractSessionIdFromUrl(url);
+    // 需求 032：只要当前会话 ID 发生变化（含切走、切回、置空），代次就递增，
+    // 使旧会话的会话授权缓存立即失效。
+    if (state.currentSessionId !== sessionId) {
+      invalidateGlobalSessionGeneration();
+    }
     const view = resolveView(targetView);
     const wc = view && view.webContents ? view.webContents : null;
     const canSend = wc && !wc.isDestroyed();
@@ -335,9 +380,10 @@ function createSessionStore(profileId: string, storeDir: string, windowState: an
     setProjectArchived,
     extractSessionIdFromUrl,
     handleUrlChange,
+    invalidateSessionGeneration,
     tryRestoreSessionFromUrl,
     state,
   };
 }
 
-export { createSessionStore };
+export { createSessionStore, getGlobalSessionGeneration, invalidateGlobalSessionGeneration };
