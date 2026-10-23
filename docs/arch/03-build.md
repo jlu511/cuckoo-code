@@ -177,6 +177,66 @@ set CUCKOO_SESSION_DIR=cuckoo-test
 
 3. 若要清理旧目录，先确认没有进程持有句柄；实在删不掉就留着（它在 `.gitignore` 内）。
 
+### 构建脚本 `scripts/build-dist.bat`
+
+一键构建 Windows 安装包，把常见坑固化进流程。
+
+**它会做这些事（**都是破坏性操作，运行前请确认**）**：
+
+| 步骤 | 操作 |
+|---|---|
+| 1 | `taskkill /F /IM Cuckoo-Code.exe /T` —— **强制结束所有 Cuckoo 进程**，未保存内容会丢失 |
+| 2 | 删除 `dist`（删不掉则中止） |
+| 3 | 删除所有 `dist-*` 目录（删不掉则中止，防止残留被打进 asar） |
+| 4 | `npm run compile` |
+| 5 | `electron-builder`（用本地 `node_modules/electron/dist`，不联网下载） |
+| 6 | 校验：asar 体积上限 450 MB、asar 根目录不得含 `1`/`reference`/`update`/`dist-*` |
+
+**调用者必须先确认**：`dist` 与所有 `dist-*` 都是可丢弃的构建产物。
+
+**日志**：`%TEMP%\cc-build-dist.log`
+
+**为什么需要它**：
+
+- 残留的 `dist-*` 目录会被 `build.files` 的 `"**/*"` 打进 asar，曾导致 asar 膨胀到 1.4 GB（见「坑 7」）
+- 步骤 3 的失败即中止，就是防止这个问题重现
+- 步骤 6 的根目录检查会在 asar 含禁用目录时让构建失败，而不是产出坏包
+
+> **编码注意**：该脚本必须是**纯 ASCII**。`cmd.exe` 按系统 ANSI（中文 Windows 为 GBK）解析 `.bat` 文件本身，
+> UTF-8 中文会被读成乱码，其中某些字节恰好是 `&` / `|` / 引号等元字符，导致命令被截断成碎片。
+> `chcp 65001` 只改**输出**代码页，改不了解析编码。若需修改脚本，保持全英文输出。
+
+### 坑 7：残留 `dist-*` 目录导致 asar 膨胀
+
+**症状**：`npm run build:win:local` 成功，但安装包 648 MB（正常约 213 MB），asar 1.4 GB（正常约 357 MB）。
+
+**根因**：`package.json` 的 `build.files` 含 `"**/*"`，而排除规则只写了 `"!dist"`
+（仅匹配名字正好是 `dist` 的目录）。若之前用 `--config.directories.output=dist-031` 构建过，
+残留的 `dist-031`（300 MB+）会被打进 asar。
+
+**实测**：一次事故中 asar 根目录含 `dist-031 = 105 条目`、`reference = 16 条目`，总大小 1427 MB。
+
+**修复**（已生效）：
+
+```json
+"files": [
+  "**/*",
+  "!dist",
+  "!dist-*",
+  "!1${/*}",
+  "!reference${/*}",
+  "!update${/*}",
+  ...
+]
+```
+
+- `!dist-*` 覆盖所有前缀变体
+- `!xxx${/*}` 是 electron-builder 官方语法，排除目录的同时不留空目录
+- `1` / `reference` / `update` 是开发资料与脚本，不含运行时资源
+
+**自检**：构建后用 `npx asar list <asar> | findstr /I "dist- reference update"` 确认无残留；
+或用 `scripts/build-dist.bat` 的第 6 步自动拦截。
+
 ### 打包后的自检清单
 
 ```bash
