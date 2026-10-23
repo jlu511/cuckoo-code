@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import * as windowState from '../window.js';
 import { isDangerous } from '../../infra/dangerous-commands.js';
 import { decodeOutput, normalizeCommand } from '../../infra/decode-output.js';
+import { checkCommandPermission } from '../../infra/permission.js';
 
 const require = createRequire(import.meta.url);
 const { app, dialog, ipcMain } = require('electron');
@@ -22,6 +23,32 @@ function registerCommandIpc(): void {
     const win = ctx ? ctx.win : windowState.getMainWindow();
     const store = ctx ? ctx.sessionStore : null;
     const selectedDir = store ? store.state.selectedProjectDir : null;
+    const cwd = selectedDir || process.env.USERPROFILE || app.getPath('home');
+
+    // 访问模式权限检查（只读模式禁止一切命令执行）
+    // 必须最先执行，且不因拒绝而回退到下方普通确认弹窗
+    let perm;
+    try {
+      perm = checkCommandPermission(trimmed);
+    } catch (err: any) {
+      perm = { allow: false, reason: '权限检查异常，已拒绝执行：' + ((err && err.message) || String(err)) };
+    }
+    if (!perm.allow) {
+      await dialog.showMessageBox(win, {
+        type: 'error',
+        title: '🔒 当前访问模式禁止执行命令',
+        message: '该命令不允许执行。',
+        detail:
+          '【完整命令】\n' + trimmed +
+          '\n\n【执行目录】\n' + cwd +
+          '\n\n【拒绝原因】\n' + (perm.reason || '当前访问模式不允许执行命令。') +
+          '\n\n【说明】\n只读模式下不允许执行任何系统命令。',
+        buttons: ['我知道了'],
+        defaultId: 0,
+        cancelId: 0,
+      });
+      return { id, success: false, error: '安全策略拒绝：' + (perm.reason || '当前访问模式不允许执行命令'), blocked: true };
+    }
 
     const dangerWarning = isDangerous(trimmed) ? '\n\n⚠️ 警告：此命令可能存在风险，请谨慎确认！' : '';
     const result = await dialog.showMessageBox(win, {
@@ -40,7 +67,7 @@ function registerCommandIpc(): void {
       const child = exec(
         trimmed,
         {
-          cwd: selectedDir || process.env.USERPROFILE || app.getPath('home'),
+          cwd,
           timeout: 30000,
           maxBuffer: 1024 * 1024,
           encoding: 'buffer',

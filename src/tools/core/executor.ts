@@ -8,6 +8,7 @@
 import crypto from 'node:crypto';
 import { isL0ReadOnly } from './readonly-checker.js';
 import { scanForSensitiveAccess } from './sensitive-guard.js';
+import { checkCommandPermission } from '../../infra/permission.js';
 
 export interface ProcessRequest {
   type: 'process';
@@ -179,7 +180,32 @@ export class SandboxExecutor {
       };
       this.registry.set(snapshot.id, snapshot);
 
-      // 3. 审批
+      // 3. 访问模式权限检查（只读模式禁止一切命令执行）
+      //    必须最先执行：不能被后续的 L0 放行或用户批准覆盖
+      try {
+        const perm = checkCommandPermission(req.type === 'shell' ? req.rawCommand : req.executable);
+        if (!perm.allow) {
+          snapshot.status = 'denied';
+          const reason = perm.reason || '当前访问模式不允许执行命令。';
+          this.auditLogger?.log(
+            sanitizeSnapshot(snapshot),
+            undefined,
+            'Blocked by access mode: ' + reason
+          );
+          throw new Error('安全策略拒绝：' + reason);
+        }
+      } catch (err: any) {
+        if (err && typeof err.message === 'string' && err.message.startsWith('安全策略拒绝：')) {
+          throw err;
+        }
+        // 权限检查本身异常 → fail-closed
+        snapshot.status = 'denied';
+        const reason = '权限检查异常，已拒绝执行：' + ((err && err.message) || String(err));
+        this.auditLogger?.log(sanitizeSnapshot(snapshot), undefined, reason);
+        throw new Error('安全策略拒绝：' + reason);
+      }
+
+      // 4. 审批
       const risk = this.assessRisk(req);
       let decision: ApprovalDecision;
 
@@ -206,7 +232,7 @@ export class SandboxExecutor {
         }
       }
 
-      // 4. 校验快照状态与过期
+      // 5. 校验快照状态与过期
       const snap = this.registry.get(snapshot.id);
       if (!snap || snap.status !== 'pending') {
         throw new Error('快照状态异常：该请求已被处理或过期。');
@@ -241,7 +267,7 @@ export class SandboxExecutor {
         throw new Error('用户拒绝了此操作。');
       }
 
-      // 5. 执行（pending -> running 在单线程内原子）
+      // 6. 执行（pending -> running 在单线程内原子）
       snap.status = 'running';
       const ac = new AbortController();
       this.activeControllers.set(snap.id, ac);

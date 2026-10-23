@@ -33,5 +33,6 @@
 | 027 | feature | [用户记忆系统](./027-memories.md) | review | feat/024-memories | 2026-10-15 |
 | 028 | feature | [用户记忆功能默认关闭 + 开关](./028-memories-default-off.md) | review | feat/028-memories-default-off | 2026-10-15 |
 | 029 | feature | [敏感路径 L3 授权统一](./029-sensitive-path-l3-auth.md) | done | dev | 2026-10-23 |
+| 030 | fix | [只读模式命令执行权限守卫](./030-readonly-mode-command-permission-guard.md) | done | dev | 2026-10-23 |
 
-共 28 个需求。
+共 29 个需求。
