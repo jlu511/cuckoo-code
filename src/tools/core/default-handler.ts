@@ -74,13 +74,21 @@ export class DefaultApprovalHandler implements ApprovalHandler {
   async requestApproval(dto: ApprovalDTO): Promise<ApprovalDecision> {
     const req = dto.request;
     const cmdStr = req.type === 'shell' ? req.rawCommand : req.executable + ' ' + req.args.join(' ');
-    const isHighRisk = isHighRiskCommand(cmdStr);
+    // L3（敏感路径 / 高危）优先用 riskLevel 判定，不再仅依赖命令关键词
+    const isHighRisk = dto.riskLevel === 'L3' || isHighRiskCommand(cmdStr);
+    const isSensitive = dto.riskLevel === 'L3';
+
+    // 风险原因区块（L3 时含具体目标路径）
+    const reasonSection = (dto.riskReasons && dto.riskReasons.length)
+      ? '\n\n【风险说明】\n' + dto.riskReasons.map((r) => '  · ' + r).join('\n')
+      : '';
 
     const envSection = formatEnvSection(req.env);
     const detail =
       '【用途说明】\n' + (req.description || '(未提供)') +
       '\n\n【执行目录】\n' + req.cwd +
       '\n\n【完整命令】\n' + cmdStr +
+      reasonSection +
       envSection +
       '\n\n【安全提示】\n本功能仅提供审批控制。一旦允许，进程将拥有完整系统权限。';
 
@@ -90,10 +98,17 @@ export class DefaultApprovalHandler implements ApprovalHandler {
       const mainWin = wins.length > 0 ? wins[0] : null;
 
       // 移除强制置顶与强制 focus：避免与 WebContentsView 抢占焦点导致弹窗鼠标事件失效
+      const title = isSensitive
+        ? '🔐 敏感路径访问'
+        : (isHighRisk ? '🚨 高危操作拦截' : '执行系统命令确认');
+      const message = isSensitive
+        ? 'AI 请求访问敏感文件，是否允许？'
+        : 'AI 请求执行以下命令，是否允许？';
+
       const { response } = await dialog.showMessageBox(mainWin || undefined, {
         type: isHighRisk ? 'error' : 'warning',
-        title: isHighRisk ? '🚨 高危操作拦截' : '执行系统命令确认',
-        message: 'AI 请求执行以下命令，是否允许？',
+        title,
+        message,
         detail,
         buttons: ['允许执行', '拒绝 (默认)'],
         defaultId: 1,

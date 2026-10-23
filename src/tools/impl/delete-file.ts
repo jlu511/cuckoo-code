@@ -3,6 +3,7 @@ import type { ToolApiMeta } from '../core/Tool.js';
 import { ToolResult } from '../core/ToolResult.js';
 import { isProtectedPath } from '../../infra/protected-paths.js';
 import { checkPathPermission } from '../../infra/permission.js';
+import { checkSensitivePathAccess } from '../core/sensitive-guard.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -73,6 +74,12 @@ class DeleteFileTool extends Tool {
       absolutePath = path.join(projectDir, filePath);
     } else if (!path.isAbsolute(absolutePath)) {
       absolutePath = path.resolve(filePath);
+    }
+
+    // 敏感路径检查（删操作，fail-closed）
+    const sensitive = await checkSensitivePathAccess(absolutePath, 'delete');
+    if (!sensitive.allow) {
+      return ToolResult.error(sensitive.reason || '敏感路径删除被拒绝');
     }
 
     // 权限模式检查

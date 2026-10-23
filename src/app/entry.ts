@@ -61,6 +61,8 @@ import { injectMcpLaunchGate } from '../mcp/client.js';
 import { DefaultMcpLaunchGate } from '../mcp/launch-gate.js';
 import { showDefaultMcpLaunchDialog } from '../mcp/default-launch-gate.js';
 import { injectPluginInstallGate, DefaultPluginInstallGate } from '../plugins/cuckoo-plugins/index.js';
+import { injectSensitivePathHandler } from '../tools/core/sensitive-guard.js';
+import { createDefaultSensitivePathHandler } from '../tools/core/default-sensitive-handler.js';
 
 /** MCP 启动审批网关实例（应用退出时清空授权缓存） */
 let mcpLaunchGateInstance: DefaultMcpLaunchGate | null = null;
@@ -1313,6 +1315,9 @@ if (!gotSingleInstanceLock) {
 
     // 注入插件安装审批网关（npm install 前必须审批）
     injectPluginInstallGate(new DefaultPluginInstallGate(120_000));
+
+    // 注入敏感路径授权处理器（原生文件工具 read/write/edit/delete 遇到敏感路径时弹 L3 红框）
+    injectSensitivePathHandler(createDefaultSensitivePathHandler(120_000));
     // 加载已启用的 Cuckoo 插件（DSH 兼容；注册其工具到全局工具表）
     import('../plugins/cuckoo-plugins/index.js').then((m: any) => {
       import('../tools/index.js').then((t: any) => {

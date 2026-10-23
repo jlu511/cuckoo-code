@@ -4,6 +4,7 @@ import { ToolResult } from '../core/ToolResult.js';
 import { normalizeLineEndings, detectLineEndings } from '../../infra/eol.js';
 import { isProtectedPath } from '../../infra/protected-paths.js';
 import { checkPathPermission } from '../../infra/permission.js';
+import { checkSensitivePathAccess } from '../core/sensitive-guard.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -229,6 +230,12 @@ class EditTool extends Tool {
         resolvedPath = path.join(projectDir, normalizedPath);
       } else if (!path.isAbsolute(normalizedPath)) {
         resolvedPath = path.resolve(normalizedPath);
+      }
+
+      // 敏感路径检查（写操作，fail-closed）
+      const sensitive = await checkSensitivePathAccess(resolvedPath, 'write');
+      if (!sensitive.allow) {
+        return ToolResult.error(sensitive.reason || '敏感路径编辑被拒绝');
       }
 
       // 权限模式检查（dryRun 也拦截，避免探测）

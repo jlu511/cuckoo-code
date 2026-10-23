@@ -462,3 +462,181 @@ test('L0 审计快照状态不伪造为 approved/succeeded', async () => {
   expect(autoLog.snap.status).not.toBe('approved');
   expect(autoLog.snap.status).not.toBe('succeeded');
 });
+
+
+// ============ L3：敏感路径访问（Phase B） ============
+
+test('L3 敏感路径：审批 DTO 携带 riskLevel=L3 与目标路径', async () => {
+  let capturedDto = null;
+  const handler = {
+    requestApproval: async (dto) => {
+      capturedDto = dto;
+      return 'deny';
+    }
+  };
+  const runner = okRunner();
+  const executor = new SandboxExecutor(handler, runner);
+
+  // type 读 .ssh 私钥
+  const req = makeReq('type C:\\Users\\Lee\\.ssh\\id_rsa');
+
+  await expect(
+    executor.execute(req, 'taskA', 'sessionA', fixedResolver('sessionA'))
+  ).rejects.toThrow(/用户拒绝了此操作/);
+
+  expect(capturedDto).toBeTruthy();
+  expect(capturedDto.riskLevel).toBe('L3');
+  expect(capturedDto.riskReasons.join(' ')).toContain('敏感路径');
+  expect(capturedDto.riskReasons.join(' ')).toContain('id_rsa');
+  // 关键：拒绝后不执行
+  expect(runner.calls).toBe(0);
+});
+
+test('L3 敏感路径：即使命中 L0 白名单也不能静默（L3 优先级更高）', async () => {
+  let handlerCalls = 0;
+  const handler = { requestApproval: async () => { handlerCalls++; return 'deny'; } };
+  const runner = okRunner();
+  const executor = new SandboxExecutor(handler, runner);
+
+  // 'dir /a /b' 是 L0 白名单，但指向 .ssh 目录应升为 L3
+  const req = makeReq('dir /a /b C:\\Users\\Lee\\.ssh');
+
+  await expect(
+    executor.execute(req, 'taskA', 'sessionA', fixedResolver('sessionA'))
+  ).rejects.toThrow(/用户拒绝了此操作/);
+
+  // 关键：L0 命令也必须弹窗（说明 L3 覆盖了 L0）
+  expect(handlerCalls).toBe(1);
+  expect(runner.calls).toBe(0);
+});
+
+test('L3 敏感路径：用户允许后正常执行', async () => {
+  let handlerCalls = 0;
+  const handler = { requestApproval: async () => { handlerCalls++; return 'allow_once'; } };
+  const runner = okRunner();
+  const executor = new SandboxExecutor(handler, runner);
+
+  const req = makeReq('type C:\\Users\\Lee\\.ssh\\id_rsa');
+  const r = await executor.execute(req, 'taskA', 'sessionA', fixedResolver('sessionA'));
+
+  expect(handlerCalls).toBe(1);
+  expect(runner.calls).toBe(1);
+  expect(r.exitCode).toBe(0);
+});
+
+test('L3 敏感路径：普通命令不触发 L3', async () => {
+  let capturedDto = null;
+  const handler = {
+    requestApproval: async (dto) => { capturedDto = dto; return 'allow_once'; }
+  };
+  const executor = new SandboxExecutor(handler, okRunner());
+
+  await executor.execute(makeReq('type README.md'), 'taskA', 'sessionA', fixedResolver('sessionA'));
+
+  expect(capturedDto.riskLevel).toBe('L2');
+});
+
+
+// ============ L3 执行器层：多命令语义覆盖 ============
+
+function makePwshReq(cmd) {
+  return { type: 'process', executable: 'powershell', args: ['-NoProfile', '-Command', cmd], cwd: 'D:\\', env: {} };
+}
+
+test('L3 执行器层：copy 敏感源触发 L3，拒绝后 runner 不执行', async () => {
+  let capturedDto = null;
+  const handler = { requestApproval: async (dto) => { capturedDto = dto; return 'deny'; } };
+  const runner = okRunner();
+  const executor = new SandboxExecutor(handler, runner);
+
+  const req = makeReq('copy C:\\Users\\Lee\\.ssh\\id_rsa D:\\proj\\leaked.txt');
+
+  await expect(
+    executor.execute(req, 'taskA', 'sessionA', fixedResolver('sessionA'))
+  ).rejects.toThrow(/用户拒绝了此操作/);
+
+  expect(capturedDto.riskLevel).toBe('L3');
+  expect(capturedDto.riskReasons.join(' ')).toContain('id_rsa');
+  expect(runner.calls).toBe(0);
+});
+
+test('L3 执行器层：move 敏感源触发 L3', async () => {
+  let capturedDto = null;
+  const handler = { requestApproval: async (dto) => { capturedDto = dto; return 'deny'; } };
+  const runner = okRunner();
+  const executor = new SandboxExecutor(handler, runner);
+
+  const req = makeReq('move C:\\Users\\Lee\\.aws\\credentials D:\\proj\\');
+
+  await expect(
+    executor.execute(req, 'taskA', 'sessionA', fixedResolver('sessionA'))
+  ).rejects.toThrow(/用户拒绝了此操作/);
+
+  expect(capturedDto.riskLevel).toBe('L3');
+  expect(runner.calls).toBe(0);
+});
+
+test('L3 执行器层：del 敏感目标触发 L3（而非仅高危红框）', async () => {
+  let capturedDto = null;
+  const handler = { requestApproval: async (dto) => { capturedDto = dto; return 'deny'; } };
+  const runner = okRunner();
+  const executor = new SandboxExecutor(handler, runner);
+
+  const req = makeReq('del /q C:\\Users\\Lee\\.ssh\\id_rsa');
+
+  await expect(
+    executor.execute(req, 'taskA', 'sessionA', fixedResolver('sessionA'))
+  ).rejects.toThrow(/用户拒绝了此操作/);
+
+  // 关键：del 本身是高危关键词，但敏感路径命中时应为 L3（敏感路径优先）
+  expect(capturedDto.riskLevel).toBe('L3');
+  expect(capturedDto.riskReasons.join(' ')).toContain('敏感路径');
+  expect(capturedDto.riskReasons.join(' ')).toContain('id_rsa');
+  expect(runner.calls).toBe(0);
+});
+
+test('L3 执行器层：PowerShell Remove-Item 敏感目标触发 L3', async () => {
+  let capturedDto = null;
+  const handler = { requestApproval: async (dto) => { capturedDto = dto; return 'deny'; } };
+  const runner = okRunner();
+  const executor = new SandboxExecutor(handler, runner);
+
+  const req = makePwshReq('Remove-Item C:\\Users\\Lee\\.ssh\\id_rsa -Force');
+
+  await expect(
+    executor.execute(req, 'taskA', 'sessionA', fixedResolver('sessionA'))
+  ).rejects.toThrow(/用户拒绝了此操作/);
+
+  expect(capturedDto.riskLevel).toBe('L3');
+  expect(runner.calls).toBe(0);
+});
+
+test('L3 执行器层：findstr pattern 后跟敏感路径触发 L3', async () => {
+  let capturedDto = null;
+  const handler = { requestApproval: async (dto) => { capturedDto = dto; return 'deny'; } };
+  const runner = okRunner();
+  const executor = new SandboxExecutor(handler, runner);
+
+  const req = makeReq('findstr BEGIN C:\\Users\\Lee\\.ssh\\id_rsa');
+
+  await expect(
+    executor.execute(req, 'taskA', 'sessionA', fixedResolver('sessionA'))
+  ).rejects.toThrow(/用户拒绝了此操作/);
+
+  expect(capturedDto.riskLevel).toBe('L3');
+  expect(capturedDto.riskReasons.join(' ')).toContain('id_rsa');
+  expect(runner.calls).toBe(0);
+});
+
+test('L3 执行器层：复制非敏感文件保持 L2（不误升 L3）', async () => {
+  let capturedDto = null;
+  const handler = { requestApproval: async (dto) => { capturedDto = dto; return 'allow_once'; } };
+  const executor = new SandboxExecutor(handler, okRunner());
+
+  await executor.execute(
+    makeReq('copy D:\\proj\\a.txt D:\\proj\\b.txt'),
+    'taskA', 'sessionA', fixedResolver('sessionA')
+  );
+
+  expect(capturedDto.riskLevel).toBe('L2');
+});

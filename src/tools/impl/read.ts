@@ -3,6 +3,7 @@ import type { ToolApiMeta } from '../core/Tool.js';
 import { ToolResult } from '../core/ToolResult.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { checkSensitivePathAccess } from '../core/sensitive-guard.js';
 
 // ========== D12：API 契约元数据（构建期生成 api.d.ts）==========
 export const apiMetas: ToolApiMeta[] = [
@@ -210,6 +211,12 @@ class ReadTool extends Tool {
         resolvedPath = path.join(projectDir, normalizedPath);
       } else if (!path.isAbsolute(normalizedPath)) {
         resolvedPath = path.resolve(normalizedPath);
+      }
+
+      // 敏感路径检查（fail-closed：无审批能力时硬拒绝）
+      const sensitive = await checkSensitivePathAccess(resolvedPath, 'read');
+      if (!sensitive.allow) {
+        return ToolResult.error(sensitive.reason || '敏感路径访问被拒绝');
       }
 
       // 文件存在性与类型检查

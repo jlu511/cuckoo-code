@@ -7,6 +7,7 @@
 
 import crypto from 'node:crypto';
 import { isL0ReadOnly } from './readonly-checker.js';
+import { scanForSensitiveAccess } from './sensitive-guard.js';
 
 export interface ProcessRequest {
   type: 'process';
@@ -300,6 +301,24 @@ export class SandboxExecutor {
   }
 
   private assessRisk(req: ExecRequest): { level: 'L0'|'L1'|'L2'|'L3', reasons: string[] } {
+    // L3：敏感路径访问（优先级最高，覆盖 L0）
+    try {
+      const sensitive = scanForSensitiveAccess(req);
+      if (sensitive.hit) {
+        return {
+          level: 'L3',
+          reasons: [
+            '敏感路径访问',
+            ...sensitive.reasons,
+            '目标: ' + sensitive.targets.join('; '),
+          ],
+        };
+      }
+    } catch (_) {
+      // 扫描异常 → 不静默放行，落回 L2 审批
+    }
+
+    // L0：只读白名单
     try {
       if (isL0ReadOnly(req)) {
         return { level: 'L0', reasons: ['只读命令白名单命中'] };
@@ -307,6 +326,7 @@ export class SandboxExecutor {
     } catch (_) {
       // 判定器异常 → fail closed，回退 L2
     }
+
     return { level: 'L2', reasons: ['默认策略：应用层执行请求'] };
   }
 
