@@ -146,6 +146,37 @@ set CUCKOO_SESSION_DIR=cuckoo-test
 窗口位置存在 `%APPDATA%\cuckoo-ai-pro-session\profile-list.json` 的 `bounds.x/y`。
 多显示器切换后可能落在不可见的坐标上。用 Win+Shift+左/右 把窗口移回当前屏幕。
 
+### 坑 6：`EBUSY ... unlink 'app.asar'` —— 旧产物被占用
+
+**已观察到的事实**：
+
+- 构建报错 `EBUSY: resource busy or locked, unlink '...\dist\win-unpacked\resources\app.asar'`
+- 用 `[System.IO.File]::Open($path, 'Open', 'ReadWrite', 'None')` 独占打开该文件失败，说明**确有进程持有独占句柄**
+- 遍历进程检查：**没有任何进程从 `win-unpacked` 启动**，也没有残留的 `electron-builder` / `makensis` / `7za`
+- 等待 3 分钟以上仍未释放
+- 当时 `MsMpEng.exe`（Windows Defender 实时保护）在运行
+
+**推测（未证实）**：最可能的原因是**杀毒软件/索引服务正在扫描那个 300MB+ 的新 asar**。
+但没有用 Restart Manager API 成功列出持有者，也没有查看 Defender 排除列表（需管理员权限），
+所以**不能断言就是 Defender**。同理，也不能排除其他安全软件或系统服务。
+
+**也不要**为了绕过这个问题就去加宽泛的 Defender 排除项——那会削弱真实防护。
+
+**恢复策略（推荐）**：
+
+1. **换一个输出目录**，不要动被锁的旧产物：
+   ```bash
+   npx electron-builder --win --publish never \
+     --config.electronDist=node_modules/electron/dist \
+     --config.directories.output=dist-build-1
+   ```
+   `.gitignore` 已含 `dist-*/`，这类目录不会进仓库。
+
+2. **构建成功后必须验证 asar 完整性**（见下方自检清单第 3 项，`BAD` 必须为 0），
+   不要凭"构建 exit code 0"就认为产物健康。
+
+3. 若要清理旧目录，先确认没有进程持有句柄；实在删不掉就留着（它在 `.gitignore` 内）。
+
 ### 打包后的自检清单
 
 ```bash
@@ -160,4 +191,7 @@ node <审计脚本>
 
 # 4. 项目根无遗留 .log
 dir /b *.log
+
+# 5. 若本次用了非默认输出目录（如 dist-031），确认 .gitignore 已覆盖（dist-*/）
+git check-ignore -v dist-031
 ```
