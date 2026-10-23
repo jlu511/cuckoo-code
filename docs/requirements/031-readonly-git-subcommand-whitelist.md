@@ -2,7 +2,7 @@
 id: 031
 type: feature
 title: 只读 Git 子命令白名单扩展
-status: doing
+status: done
 branch: feat/031-readonly-git-subcommand-whitelist
 created: 2026-10-23
 updated: 2026-10-23
