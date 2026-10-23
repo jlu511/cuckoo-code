@@ -94,6 +94,19 @@ npm run build:win:local   # 本地打 Windows 包
 **提交前必做**：typecheck / test / lint / compile **全绿**。
 **改了运行时行为（IPC / hook / 工具 / UI）→ 必须真机 `npm start` 验证。**
 
+### ⚠️ 打包前必读：`docs/arch/03-build.md` 的「已知坑」
+
+四条硬约束（违反会导致产物静默损坏）：
+
+1. **构建日志绝不能落在项目目录内**（`"**/*"` 会把它打进 asar；打包期间文件增长 →
+   数据区偏移 → 其后全部文件内容错位）。日志写 `%TEMP%`。
+2. **构建脚本已固定 `--config.electronDist=node_modules/electron/dist`**，
+   避免 electron 下载超时导致构建无限卡死。不要去掉这个参数。
+3. **不要并发跑两个构建**，会互相覆盖 `dist/win-unpacked`。
+4. `win-unpacked\Cuckoo-Code.exe` 双击无反应是**单实例锁**，不是坏了。
+
+打包后必须校验 asar 哈希完整性（`BAD=0`），细节见 `docs/arch/03-build.md`。
+
 ## 八、关键约定
 
 - **D12 工具契约**：工具是唯一真相源。改 `apiMetas` + `bootstrap()`，`api.d.ts` 与 `bootstrap.generated.ts` **自动生成**。
