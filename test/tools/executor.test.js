@@ -1,5 +1,11 @@
-import { test, expect } from 'vitest';
+import { test, expect, beforeAll } from 'vitest';
 import { SandboxExecutor } from '../../src/tools/core/executor.js';
+import { injectSafetyChecker } from '../../src/tools/core/safety-precheck.js';
+
+// 测试环境注入放行检查器（安全预检本身有独立测试覆盖）
+beforeAll(() => {
+  injectSafetyChecker(async () => ({ kind: 'allow' }));
+});
 
 // ============ 通用 helpers ============
 
@@ -372,16 +378,14 @@ test('L2 行为不变：非白名单命令仍要弹窗', async () => {
 
 // ============ L0 补齐：判定器异常 / 失败 / 超时 / 审计状态 ============
 
-test('L0 判定器异常 → 回退 L2，仍弹窗（fail closed）', async () => {
+test('安全预检：无法抽取命令正文 → fail-closed 拒绝，不弹窗不执行', async () => {
   let handlerCalls = 0;
   const handler = { requestApproval: async () => { handlerCalls++; return 'allow_once'; } };
   const runner = okRunner();
   const executor = new SandboxExecutor(handler, runner);
 
-  // rawCommand = null：
-  // - getSignature() 里 'shell:cmd:' + null + ':D:\' → 字符串拼接安全
-  // - isCmdReadOnly() 里 null.trim() → TypeError，被 assessRisk 的 catch 捕获
-  // - JSON.stringify({ rawCommand: null }) → 正常序列化
+  // rawCommand = null：无法抽取可分析的命令正文
+  // 预检必须 fail-closed（不放行、不进入审批），runner 也不得执行
   const evilReq = {
     type: 'shell',
     shellType: 'cmd',
@@ -390,13 +394,12 @@ test('L0 判定器异常 → 回退 L2，仍弹窗（fail closed）', async () =
     env: {},
   };
 
-  // 关键：判定器抛错时不能静默放行，必须回退 L2 走审批
-  // （执行可能失败，但 handler 必须被调用）
-  try {
-    await executor.execute(evilReq, 'taskA', 'sessionA', fixedResolver('sessionA'));
-  } catch (_) { /* 执行可能失败，不影响核心断言 */ }
+  await expect(
+    executor.execute(evilReq, 'taskA', 'sessionA', fixedResolver('sessionA'))
+  ).rejects.toThrow(/安全策略拒绝/);
 
-  expect(handlerCalls).toBe(1);
+  expect(handlerCalls).toBe(0);
+  expect(runner.calls).toBe(0);
 });
 
 test('L0 执行失败 → 状态 failed，锁已释放', async () => {
@@ -639,4 +642,165 @@ test('L3 执行器层：复制非敏感文件保持 L2（不误升 L3）', async
   );
 
   expect(capturedDto.riskLevel).toBe('L2');
+});
+
+// ============ CC Safety Net 硬性否决（不可被 L3/L2/L0 覆盖）============
+
+test('CCSN deny + 无敏感路径 → 直接拒绝，不弹窗不执行', async () => {
+  injectSafetyChecker(async () => ({ kind: 'deny', reason: '禁止破坏性 Git 操作', ruleId: 'git.reset-hard' }));
+  let handlerCalls = 0;
+  const handler = { requestApproval: async () => { handlerCalls++; return 'allow_once'; } };
+  const runner = okRunner();
+  const executor = new SandboxExecutor(handler, runner);
+
+  await expect(
+    executor.execute(makeReq('git reset --hard'), 'taskA', 'sessionA', fixedResolver('sessionA'))
+  ).rejects.toThrow(/CC Safety Net 拒绝执行/);
+
+  expect(handlerCalls).toBe(0);
+  expect(runner.calls).toBe(0);
+});
+
+test('CCSN deny + 命中 L3 → 仍拒绝，用户无权放行，只弹阻断提示', async () => {
+  injectSafetyChecker(async () => ({ kind: 'deny', reason: '禁止删除密钥', ruleId: 'secret.rm' }));
+  let approvalCalls = 0;
+  let blockedNotice = null;
+  const handler = {
+    requestApproval: async () => { approvalCalls++; return 'allow_once'; },
+    notifyBlocked: async (notice) => { blockedNotice = notice; },
+  };
+  const runner = okRunner();
+  const executor = new SandboxExecutor(handler, runner);
+
+  await expect(
+    executor.execute(
+      makeReq('del /q C:\\Users\\Lee\\.ssh\\id_rsa'),
+      'taskA', 'sessionA', fixedResolver('sessionA')
+    )
+  ).rejects.toThrow(/CC Safety Net 拒绝执行/);
+
+  // 关键：没有进入审批（用户没有任何放行机会）
+  expect(approvalCalls).toBe(0);
+  expect(runner.calls).toBe(0);
+  // 但用户能看到阻断原因
+  expect(blockedNotice).not.toBeNull();
+  expect(blockedNotice.reason).toContain('禁止删除密钥');
+  expect(blockedNotice.ruleId).toBe('secret.rm');
+  expect(blockedNotice.sensitive.hit).toBe(true);
+});
+
+test('CCSN deny + 命中 L0 白名单 → 仍拒绝（L0 不豁免 CCSN）', async () => {
+  injectSafetyChecker(async () => ({ kind: 'deny', reason: '白名单命令也被拒绝', ruleId: 'test.l0' }));
+  let handlerCalls = 0;
+  const handler = { requestApproval: async () => { handlerCalls++; return 'allow_once'; } };
+  const runner = okRunner();
+  const executor = new SandboxExecutor(handler, runner);
+
+  await expect(
+    executor.execute(makeReq('dir /a /b'), 'taskA', 'sessionA', fixedResolver('sessionA'))
+  ).rejects.toThrow(/CC Safety Net 拒绝执行/);
+
+  expect(handlerCalls).toBe(0);
+  expect(runner.calls).toBe(0);
+});
+
+test('CCSN 异常 → fail-closed，不执行', async () => {
+  injectSafetyChecker(async () => { throw new Error('规则引擎崩溃'); });
+  let handlerCalls = 0;
+  const handler = { requestApproval: async () => { handlerCalls++; return 'allow_once'; } };
+  const runner = okRunner();
+  const executor = new SandboxExecutor(handler, runner);
+
+  await expect(
+    executor.execute(makeReq('echo hi'), 'taskA', 'sessionA', fixedResolver('sessionA'))
+  ).rejects.toThrow(/安全预检异常/);
+
+  expect(handlerCalls).toBe(0);
+  expect(runner.calls).toBe(0);
+});
+
+test('CCSN 超时 → fail-closed，不执行', async () => {
+  injectSafetyChecker(() => new Promise((resolve) => setTimeout(() => resolve({ kind: 'allow' }), 5000)));
+  // 用 client 的超时语义模拟：这里让检查器自身超时拒绝
+  injectSafetyChecker(async () => ({ kind: 'error', reason: 'CCSN 检查超时（10000ms）' }));
+  const runner = okRunner();
+  const executor = new SandboxExecutor(okHandler(), runner);
+
+  await expect(
+    executor.execute(makeReq('echo hi'), 'taskA', 'sessionA', fixedResolver('sessionA'))
+  ).rejects.toThrow(/检查超时/);
+
+  expect(runner.calls).toBe(0);
+});
+
+test('CCSN allow + L3 → 走 L3 红框，用户允许后执行', async () => {
+  injectSafetyChecker(async () => ({ kind: 'allow' }));
+  let capturedDto = null;
+  const handler = { requestApproval: async (dto) => { capturedDto = dto; return 'allow_once'; } };
+  const runner = okRunner();
+  const executor = new SandboxExecutor(handler, runner);
+
+  await executor.execute(
+    makeReq('type C:\\Users\\Lee\\.ssh\\id_rsa'),
+    'taskA', 'sessionA', fixedResolver('sessionA')
+  );
+
+  expect(capturedDto.riskLevel).toBe('L3');
+  expect(runner.calls).toBe(1);
+});
+
+test('CCSN allow + L3 → 用户拒绝则不执行', async () => {
+  injectSafetyChecker(async () => ({ kind: 'allow' }));
+  const handler = { requestApproval: async () => 'deny' };
+  const runner = okRunner();
+  const executor = new SandboxExecutor(handler, runner);
+
+  await expect(
+    executor.execute(
+      makeReq('type C:\\Users\\Lee\\.ssh\\id_rsa'),
+      'taskA', 'sessionA', fixedResolver('sessionA')
+    )
+  ).rejects.toThrow(/用户拒绝了此操作/);
+
+  expect(runner.calls).toBe(0);
+});
+
+test('CCSN allow + 普通命令 → 仍走 L2 弹窗', async () => {
+  injectSafetyChecker(async () => ({ kind: 'allow' }));
+  let capturedDto = null;
+  const handler = { requestApproval: async (dto) => { capturedDto = dto; return 'allow_once'; } };
+  const executor = new SandboxExecutor(handler, okRunner());
+
+  await executor.execute(makeReq('echo hi'), 'taskA', 'sessionA', fixedResolver('sessionA'));
+
+  expect(capturedDto.riskLevel).toBe('L2');
+});
+
+test('CCSN allow + L0 → 仍然静默放行（行为不变）', async () => {
+  injectSafetyChecker(async () => ({ kind: 'allow' }));
+  let handlerCalls = 0;
+  const handler = { requestApproval: async () => { handlerCalls++; return 'allow_once'; } };
+  const runner = okRunner();
+  const executor = new SandboxExecutor(handler, runner);
+
+  await executor.execute(makeReq('dir /a /b'), 'taskA', 'sessionA', fixedResolver('sessionA'));
+
+  expect(handlerCalls).toBe(0);
+  expect(runner.calls).toBe(1);
+});
+
+test('CCSN 检查器收到的是 PowerShell 脚本正文（不含外壳参数）', async () => {
+  let received = null;
+  injectSafetyChecker(async (input) => { received = input; return { kind: 'allow' }; });
+  const executor = new SandboxExecutor(okHandler(), okRunner());
+
+  await executor.execute(
+    makePwshReq('Remove-Item .\\tmp.txt -Force'),
+    'taskA', 'sessionA', fixedResolver('sessionA')
+  );
+
+  expect(received).not.toBeNull();
+  expect(received.command).toBe('Remove-Item .\\tmp.txt -Force');
+  expect(received.command).not.toContain('powershell');
+  expect(received.command).not.toContain('-NoProfile');
 });

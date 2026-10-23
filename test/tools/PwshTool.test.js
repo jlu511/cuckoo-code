@@ -1,6 +1,11 @@
 import { test, expect, beforeEach } from 'vitest';
 import { PwshTool, DANGEROUS_PWSH_CMDS } from '../../src/tools/impl/pwsh.js';
-import { injectSandboxExecutor, SandboxExecutor } from '../../src/tools/core/executor.js';
+import { injectSandboxExecutor } from '../../src/tools/core/executor.js';
+import { injectSafetyChecker } from '../../src/tools/core/safety-precheck.js';
+
+beforeEach(() => {
+  injectSafetyChecker(async () => ({ kind: 'allow' }));
+});
 
 // ============ helpers ============
 

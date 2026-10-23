@@ -8,6 +8,7 @@
 import crypto from 'node:crypto';
 import { isL0ReadOnly } from './readonly-checker.js';
 import { scanForSensitiveAccess } from './sensitive-guard.js';
+import { runSafetyPrecheck, type PrecheckOutcome } from './safety-precheck.js';
 import { checkCommandPermission } from '../../infra/permission.js';
 
 export interface ProcessRequest {
@@ -54,8 +55,24 @@ export interface ApprovalDTO {
 
 export type ApprovalDecision = 'allow_once' | 'allow_session' | 'deny';
 
+/** 阻断通知信息（CC Safety Net 硬性否决 / 预检异常） */
+export interface BlockedNotice {
+  request: ExecRequest;
+  /** 敏感路径命中详情（未命中时为 null） */
+  sensitive: { hit: boolean; targets: string[]; reasons: string[] };
+  /** 阻断原因 */
+  reason: string;
+  /** 阻断规则标识 */
+  ruleId: string;
+}
+
 export interface ApprovalHandler {
   requestApproval(dto: ApprovalDTO): Promise<ApprovalDecision>;
+  /**
+   * 仅通知：告诉用户某条命令已被硬性阻断（CC Safety Net deny 或预检异常）。
+   * 实现方不得提供"允许执行"选项；此方法无返回值，也不影响控制流。
+   */
+  notifyBlocked?(notice: BlockedNotice): Promise<void>;
 }
 
 export interface ProcessResult {
@@ -181,7 +198,7 @@ export class SandboxExecutor {
       this.registry.set(snapshot.id, snapshot);
 
       // 3. 访问模式权限检查（只读模式禁止一切命令执行）
-      //    必须最先执行：不能被后续的 L0 放行或用户批准覆盖
+      //    必须最先执行：不能被子序列的 L0 放行、用户批准或 CCSN allow 覆盖
       try {
         const perm = checkCommandPermission(req.type === 'shell' ? req.rawCommand : req.executable);
         if (!perm.allow) {
@@ -205,8 +222,36 @@ export class SandboxExecutor {
         throw new Error('安全策略拒绝：' + reason);
       }
 
-      // 4. 审批
-      const risk = this.assessRisk(req);
+      // 4. 安全预检（敏感路径 + CC Safety Net）
+      //    必须在审批之前完成：CCSN 的 deny 是硬性否决，不能被 L3/L2 授权覆盖
+      const precheck = await runSafetyPrecheck(req);
+
+      if (precheck.blocked) {
+        snapshot.status = 'denied';
+        const reason = precheck.blockReason || '安全预检拒绝执行。';
+        this.auditLogger?.log(
+          sanitizeSnapshot(snapshot),
+          undefined,
+          'Blocked by safety precheck [' + (precheck.blockRuleId || '-') + ']: ' + reason
+        );
+
+        // CCSN 硬性否决或预检异常：一律显示阻断提示（不论是否命中敏感路径）
+        if (typeof this.approvalHandler.notifyBlocked === 'function') {
+          try {
+            await this.approvalHandler.notifyBlocked({
+              request: JSON.parse(JSON.stringify(req)),
+              sensitive: precheck.sensitive,
+              reason,
+              ruleId: precheck.blockRuleId || 'cuckoo.precheck',
+            });
+          } catch (_) { /* 通知失败不影响拒绝 */ }
+        }
+
+        throw new Error('安全策略拒绝：' + reason);
+      }
+
+      // 5. 审批
+      const risk = this.assessRisk(req, precheck);
       let decision: ApprovalDecision;
 
       if (risk.level === 'L0') {
@@ -232,7 +277,7 @@ export class SandboxExecutor {
         }
       }
 
-      // 5. 校验快照状态与过期
+      // 6. 校验快照状态与过期
       const snap = this.registry.get(snapshot.id);
       if (!snap || snap.status !== 'pending') {
         throw new Error('快照状态异常：该请求已被处理或过期。');
@@ -267,7 +312,7 @@ export class SandboxExecutor {
         throw new Error('用户拒绝了此操作。');
       }
 
-      // 6. 执行（pending -> running 在单线程内原子）
+      // 7. 执行（pending -> running 在单线程内原子）
       snap.status = 'running';
       const ac = new AbortController();
       this.activeControllers.set(snap.id, ac);
@@ -326,10 +371,10 @@ export class SandboxExecutor {
     return v;
   }
 
-  private assessRisk(req: ExecRequest): { level: 'L0'|'L1'|'L2'|'L3', reasons: string[] } {
+  private assessRisk(req: ExecRequest, precheck?: PrecheckOutcome): { level: 'L0'|'L1'|'L2'|'L3', reasons: string[] } {
     // L3：敏感路径访问（优先级最高，覆盖 L0）
     try {
-      const sensitive = scanForSensitiveAccess(req);
+      const sensitive = precheck ? precheck.sensitive : scanForSensitiveAccess(req);
       if (sensitive.hit) {
         return {
           level: 'L3',

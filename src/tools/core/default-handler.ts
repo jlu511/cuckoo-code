@@ -1,5 +1,10 @@
 import { createRequire } from 'node:module';
-import type { ApprovalHandler, ApprovalDTO, ApprovalDecision } from './executor.js';
+import type {
+  ApprovalHandler,
+  ApprovalDTO,
+  ApprovalDecision,
+  BlockedNotice,
+} from './executor.js';
 
 const require = createRequire(import.meta.url);
 
@@ -120,6 +125,49 @@ export class DefaultApprovalHandler implements ApprovalHandler {
       // 无 Electron 环境（如测试）下安全兜底：直接拒绝
       console.error('[Sandbox] 无法加载弹窗，出于安全考虑已自动拒绝:', e.message || e);
       return 'deny';
+    }
+  }
+
+  /**
+   * 硬性阻断的只读提示：只提供"我知道了"，不提供任何放行选项。
+   * 无 Electron 环境（测试）下静默返回。
+   */
+  async notifyBlocked(notice: BlockedNotice): Promise<void> {
+    const req = notice.request;
+    const cmdStr = req.type === 'shell' ? req.rawCommand : req.executable + ' ' + req.args.join(' ');
+
+    const sensitiveSection = (notice.sensitive && notice.sensitive.hit)
+      ? '\n\n【敏感路径】\n' +
+        notice.sensitive.targets.map((t) => '  · ' + t).join('\n') +
+        (notice.sensitive.reasons.length
+          ? '\n\n【敏感类别】\n' + notice.sensitive.reasons.map((r) => '  · ' + r).join('\n')
+          : '')
+      : '';
+
+    const detail =
+      '【完整命令】\n' + cmdStr +
+      '\n\n【执行目录】\n' + req.cwd +
+      sensitiveSection +
+      '\n\n【阻断原因】\n' + notice.reason +
+      '\n\n【规则】\n' + notice.ruleId +
+      '\n\n【说明】\n该命令被安全策略硬性拒绝，此提示不提供放行选项。';
+
+    try {
+      const { dialog, BrowserWindow } = require('electron');
+      const wins = BrowserWindow.getAllWindows();
+      const mainWin = wins.length > 0 ? wins[0] : null;
+
+      await dialog.showMessageBox(mainWin || undefined, {
+        type: 'error',
+        title: '🛑 命令已被安全策略阻断',
+        message: '该命令不允许执行。',
+        detail,
+        buttons: ['我知道了'],
+        defaultId: 0,
+        cancelId: 0,
+      });
+    } catch (_) {
+      // 无 Electron 环境（测试）：静默返回
     }
   }
 }

@@ -1,7 +1,12 @@
 'use strict';
-import { test } from 'vitest';
+import { test, beforeAll } from 'vitest';
 import assert from 'node:assert';
 import { BashTool, DANGEROUS_CMDS } from '../../src/tools/impl/bash.js';
+import { injectSafetyChecker } from '../../src/tools/core/safety-precheck.js';
+
+beforeAll(() => {
+  injectSafetyChecker(async () => ({ kind: 'allow' }));
+});
 
 test('DANGEROUS_CMDS 定义完整', () => {
   assert.ok(Array.isArray(DANGEROUS_CMDS));

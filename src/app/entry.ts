@@ -63,9 +63,14 @@ import { showDefaultMcpLaunchDialog } from '../mcp/default-launch-gate.js';
 import { injectPluginInstallGate, DefaultPluginInstallGate } from '../plugins/cuckoo-plugins/index.js';
 import { injectSensitivePathHandler } from '../tools/core/sensitive-guard.js';
 import { createDefaultSensitivePathHandler } from '../tools/core/default-sensitive-handler.js';
+import { injectSafetyChecker } from '../tools/core/safety-precheck.js';
+import { CcsnClient, createCcsnChecker } from '../tools/core/ccsn-client.js';
+import { createElectronCcsnProcessFactory } from './ccsn/electron-spawner.js';
 
 /** MCP 启动审批网关实例（应用退出时清空授权缓存） */
 let mcpLaunchGateInstance: DefaultMcpLaunchGate | null = null;
+/** CC Safety Net 检查客户端（Utility Process，退出时销毁） */
+let ccsnClientInstance: CcsnClient | null = null;
 import { injectGoalDonePusher } from '../tools/impl/goal-done.js';
 import { isSubagentWindow, pushGoalDone } from './goal.js';
 import { injectSessionTitleSetter } from '../tools/impl/name-conversation.js';
@@ -1318,6 +1323,14 @@ if (!gotSingleInstanceLock) {
 
     // 注入敏感路径授权处理器（原生文件工具 read/write/edit/delete 遇到敏感路径时弹 L3 红框）
     injectSensitivePathHandler(createDefaultSensitivePathHandler(120_000));
+
+    // 注入 CC Safety Net 检查客户端（独立 Utility Process，避免同步检查阻塞主进程事件循环）
+    // 环境变量（strict / strict=1 / project_tighten_only）由工厂在 fork 时显式设置
+    ccsnClientInstance = new CcsnClient(createElectronCcsnProcessFactory(), {
+      requestTimeoutMs: 10_000,
+      startupTimeoutMs: 10_000,
+    });
+    injectSafetyChecker(createCcsnChecker(ccsnClientInstance));
     // 加载已启用的 Cuckoo 插件（DSH 兼容；注册其工具到全局工具表）
     import('../plugins/cuckoo-plugins/index.js').then((m: any) => {
       import('../tools/index.js').then((t: any) => {
@@ -1344,6 +1357,14 @@ if (!gotSingleInstanceLock) {
 
     });
 }
+
+app.on('before-quit', () => {
+  // 销毁 CC Safety Net 检查进程，避免 utility process 泄漏
+  if (ccsnClientInstance) {
+    try { ccsnClientInstance.dispose(); } catch (_) { /* ignore */ }
+    ccsnClientInstance = null;
+  }
+});
 
 app.on('window-all-closed', () => {
   // 切换平台时会先销毁旧窗口（select-platform）再创建新窗口，
