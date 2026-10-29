@@ -272,6 +272,12 @@ interface ExtractResult {
   isRecursive: boolean;
 }
 
+/**
+ * 重定向操作符：2>nul、>file、>>log、<in、2>&1 等。
+ * 这些不是删除目标，必须跳过。
+ */
+const REDIRECT_RE = /^\d*[<>]/;
+
 function extractTargets(cmd: string, eco: 'unix' | 'cmd' | 'ps'): ExtractResult | null {
   const tokens = tokenize(cmd);
   if (!tokens || tokens.length === 0) return null;
@@ -283,6 +289,11 @@ function extractTargets(cmd: string, eco: 'unix' | 'cmd' | 'ps'): ExtractResult 
   for (let i = 1; i < tokens.length; i++) {
     const t = tokens[i];
     if (!t) continue;
+    // 跳过重定向操作符；若操作符本身不带文件名（如 >>、>、2>），跳过其后的 token
+    if (REDIRECT_RE.test(t)) {
+      if (/^\d*[<>]$/.test(t) || /^\d*[<>]{2}$/.test(t)) i++;
+      continue;
+    }
     if (t.startsWith(optPrefix)) {
       if (RECURSIVE_FLAGS[eco].some((re) => re.test(t))) isRecursive = true;
       continue;
@@ -406,10 +417,19 @@ export function analyzeCommand(rawCommand: string, ctx: AnalyzeContext): DeleteA
     const segStripped = stripWrappers(segRaw);
     const seg = stripShellWrapper(segStripped);
 
-    const tokens = tokenize(seg);
+    // 剥壳后可能暴露新的分隔符（如 cmd /c "cmd1 & cmd2" → 内部有 &），再拆一次
+    const innerSplit = splitSegmentsAwareQuotes(seg);
+    if (innerSplit.hasUnbalancedQuote) {
+      hasUnresolved = true;
+      reasons.push('命令含未配对的引号，无法完整解析');
+    }
+    const innerSegs = innerSplit.segments.length > 0 ? innerSplit.segments : [seg];
+
+    for (const innerSeg of innerSegs) {
+    const tokens = tokenize(innerSeg);
     if (!tokens || tokens.length === 0) {
       // 只有能粗判为删除命令时才标 unknown；普通命令（echo/findstr 等）解析失败不影响
-      if (looksLikeDeleteCommand(seg)) {
+      if (looksLikeDeleteCommand(innerSeg)) {
         hasUnresolved = true;
         reasons.push('命令无法解析');
       }
@@ -437,7 +457,7 @@ export function analyzeCommand(rawCommand: string, ctx: AnalyzeContext): DeleteA
 
     commands.add(cmdName);
 
-    const extracted = extractTargets(seg, eco);
+    const extracted = extractTargets(innerSeg, eco);
     if (!extracted) {
       hasUnresolved = true;
       reasons.push('命令 ' + cmdName + ' 无法解析（引号不配对等）');
@@ -453,6 +473,7 @@ export function analyzeCommand(rawCommand: string, ctx: AnalyzeContext): DeleteA
       const t = classifyToken(raw, ctx);
       allTargets.push(t);
       if (t.scope === 'unknown') hasUnresolved = true;
+    }
     }
   }
 

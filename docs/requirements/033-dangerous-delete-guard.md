@@ -312,6 +312,24 @@ return response === 0 ? 'allow' : 'manual';
 
 **复测**：真机验证 CASE 3（`rm -rf build/*`）和 CASE 5（`rm -rf $TARGET`）均返回 `manual` ✅。
 
+### 第二次真机验证发现的缺陷（安装后回归）
+
+**现象**：执行 `cmd /c "rmdir /s /q PATH 2>nul & echo DONE"` 时，用户点「我自己删」后返回的路径清单包含 4 个假目标：`2>nul`、`&`、`echo`、`DONE`。
+
+**根因**：
+
+1. `stripShellWrapper` 剥掉 `cmd /c "..."` 的外层引号后，内部 `&` 才暴露，但代码没有再次拆段
+2. `extractTargets` 不认识重定向符（`2>nul` / `>file` / `>>log` / `2>&1`），把它当普通参数放进目标清单
+
+**影响**：不会漏拦（拦截仍 fail-safe），但清单有噪音、可能将重定向文件名误当目标。
+
+**修复**：
+
+- 剥壳后对内部再次调用 `splitSegmentsAwareQuotes`，逐段识别命令
+- 新增 `REDIRECT_RE = /^\d*[<>]/`，跳过重定向操作符；若操作符本身不带文件名（`>>` / `>` / `2>`），跳过其后的 token
+
+**新增测试**：`test/infra/dangerous-delete-fixes.test.js`（7 用例），覆盖内层 `&` 拆段、`2>nul` / `>nul` / `2>&1` / `>> log.txt` 过滤。
+
 ### 修复后的完整验证
 
 - `npm run typecheck`：0 错误
