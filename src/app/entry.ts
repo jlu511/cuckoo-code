@@ -83,6 +83,8 @@ import { addMemory, removeMemory, listMemories } from '../infra/memories.js';
 import { pushUrlState } from './ipc/shell.js';
 import { pushHarnessState, stopGeneration } from './ipc/harness.js';
 import { injectWindowGroupDeps, requestSwitchShare } from './ipc/window-groups.js';
+import { injectDeleteApprovalHandler } from '../tools/core/delete-guard.js';
+import { createDefaultDeleteApprovalHandler } from './delete-approval.js';
 import { initProject } from '../session/project-context.js';
 import * as windowGroups from './window-groups.js';
 
@@ -1347,6 +1349,8 @@ if (!gotSingleInstanceLock) {
 
   app.whenReady().then(() => {
     setupAppMenu();
+    // 删除审批：注入默认处理器（未注入时 guardDelete 会 fail-closed）
+    try { injectDeleteApprovalHandler(createDefaultDeleteApprovalHandler()); } catch (_) { /* ignore */ }
     // MCP 配置首次迁移（旧 userData/mcp.json → ~/.cuckoo/mcp.json，旧文件保留）
     try { mcpConfig.migrateLegacy(); } catch (_) { /* ignore */ }
     // 加载已启用的 Cuckoo 插件（DSH 兼容；注册其工具到全局工具表）

@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import * as windowState from '../window.js';
 import { isDangerous } from '../../infra/dangerous-commands.js';
 import { decodeOutput, normalizeCommand } from '../../infra/decode-output.js';
+import { guardDelete } from '../../tools/core/delete-guard.js';
 
 const require = createRequire(import.meta.url);
 const { app, dialog, ipcMain } = require('electron');
@@ -22,6 +23,16 @@ function registerCommandIpc(): void {
     const win = ctx ? ctx.win : windowState.getMainWindow();
     const store = ctx ? ctx.sessionStore : null;
     const selectedDir = store ? store.state.selectedProjectDir : null;
+
+    // 删除保护编排：上游 isDangerous 只加了警告文字，此处补充越界删除的阻断审批
+    const effectiveCwd = selectedDir || process.env.USERPROFILE || app.getPath('home');
+    const guard = await guardDelete(trimmed, effectiveCwd, selectedDir || null, 'cmd');
+    if (guard.action === 'reject') {
+      return { id, success: false, error: guard.text };
+    }
+    if (guard.action === 'manual') {
+      return { id, success: false, error: guard.text, manual: true };
+    }
 
     const dangerWarning = isDangerous(trimmed) ? '\n\n⚠️ 警告：此命令可能存在风险，请谨慎确认！' : '';
     const result = await dialog.showMessageBox(win, {

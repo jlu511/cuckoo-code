@@ -68,3 +68,6 @@ coverage/
 custom-providers/
 # Monaco（体积大，不进仓库；由 scripts/copy-monaco.mjs 从 node_modules 复制）
 src/ui/vendor/monaco/
+
+# 本地构建/诊断脚本目录
+update/

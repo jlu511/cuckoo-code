@@ -5,6 +5,7 @@ import { exec } from 'node:child_process';
 import path from 'node:path';
 import { decodeOutput, normalizeCommand } from '../../infra/decode-output.js';
 import { isDangerous, DANGEROUS_CMDS } from '../../infra/dangerous-commands.js';
+import { guardDelete } from '../core/delete-guard.js';
 
 // ========== D12：API 契约元数据（构建期生成 api.d.ts）==========
 export const apiMetas: ToolApiMeta[] = [
@@ -131,6 +132,15 @@ class BashTool extends Tool {
         workDir = projectDir;
       } else {
         workDir = process.env.USERPROFILE || process.env.HOME || 'C:\\';
+      }
+
+      // 删除保护编排：上游 isDangerous 已直接拒绝，此处补充需用户确认的越界删除
+      const guard = await guardDelete(trimmed, workDir, projectDir || null, 'cmd');
+      if (guard.action === 'reject') {
+        return ToolResult.error(guard.text);
+      }
+      if (guard.action === 'manual') {
+        return ToolResult.success(guard.text);
       }
 
       const timeout = typeof timeoutMs === 'number' && timeoutMs > 0 ? timeoutMs : 30000;
